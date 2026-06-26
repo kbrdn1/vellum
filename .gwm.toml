@@ -42,6 +42,13 @@ when = "file_exists:Cargo.toml"
 # `lumen` preset = `lumen diff {base}..{head}` fullscreen suspend-and-resume.
 [review]
 tool = "lumen"
+# Vellum integrates feature work into `dev` (PRs target `dev`, stable promotes
+# to `main`). `gwm create` always branches off the *current HEAD* — there is no
+# create-base config knob — so the workflow is: `git checkout dev` before every
+# `gwm create`. This pins the *review* base to `dev` explicitly, so `R: review`
+# diffs a feature branch against `dev` even when the recorded `gwm-base` is
+# missing (resolution: upstream → gwm-base → default_base → dev → main).
+default_base = "dev"
 
 # -- TUI macros (issue #290) -------------------------------------------------
 # Two user-defined commands fired from the worktree list, run in the selected
