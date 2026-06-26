@@ -119,14 +119,10 @@ impl SqliteDriver {
 }
 
 /// Guard the read path: reject anything that isn't a single read-only query
-/// before it reaches the database. The primary write-safety boundary (the
-/// read-only connection is a backstop): `CREATE TEMP TABLE`, DML/DDL, and
-/// multi-statement payloads are refused here, so they never run outside the
-/// gated write/diff path (#64).
-///
-/// If sqlparser can't parse the input (its SQLite coverage isn't total), we
-/// do *not* false-reject a possibly-valid read — it falls through to the
-/// read-only connection, which still refuses any write to the main database.
+/// before it reaches the database. This is the primary write-safety boundary
+/// (the read-only connection is a backstop): writes (DML/DDL, `CREATE TEMP`),
+/// multi-statement payloads, and input sqlparser can't parse are all refused,
+/// so they never run outside the gated write/diff path (#64).
 fn ensure_read_only_query(sql: &str) -> Result<()> {
   // Fail closed: the read path runs only what it can verify is a single
   // read-only query. Anything sqlparser can't parse — or that parses as a
