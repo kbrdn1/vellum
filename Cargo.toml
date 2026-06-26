@@ -48,12 +48,31 @@ clap = { version = "4.5", features = ["derive", "color"] }
 anyhow = "1"
 thiserror = "2"
 # Async runtime. Only `rt-multi-thread` + `macros` (for `#[tokio::main]`) now;
-# `sync` (channels for the Effect loop) and the sqlx drivers land per-phase.
+# `sync` (channels for the Effect loop) lands with the runtime phase.
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+# Async methods on the `Driver` port (dyn-ready for the Phase 1 ConnPool).
+async-trait = "0.1"
+# DB driver — SQLite only for Phase 0 (bundled libsqlite3: no system dep, no
+# TLS for a local file). Postgres / MySQL land in Phase 1 behind the same
+# `Driver` port. `default-features = false` skips the unused macros / migrate /
+# any features.
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite"] }
+# The single SQL-understanding layer (ARCHITECTURE §stack). Used here to keep
+# the read path read-only: parse the input and require exactly one
+# `SELECT`-style statement before it reaches the database.
+# `default-features = false` drops the `recursive-protection` feature, whose
+# `recursive → stacker → psm → ar_archive_writer` chain declares rust-version
+# 1.88 and would break the repo's 1.86 MSRV. Trade-off: deeply-nested SQL is
+# no longer guarded against parser stack overflow — acceptable for local,
+# user-supplied input; revisit if the MSRV rises.
+sqlparser = { version = "0.62", default-features = false, features = ["std"] }
 
 [dev-dependencies]
 assert_cmd = "2"
 predicates = "3"
+# Driver tests seed a throwaway on-disk SQLite db (the read-only driver can't
+# open `:memory:`), cleaned up on drop.
+tempfile = "3"
 
 [profile.release]
 opt-level = 3

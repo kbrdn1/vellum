@@ -7,5 +7,6 @@
 //! / tui).
 
 pub mod cli;
+pub mod driver;
 pub mod error;
 pub mod model;
