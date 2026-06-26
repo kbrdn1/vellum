@@ -52,34 +52,7 @@ impl Driver for SqliteDriver {
       rows.push(cells);
     }
 
-    // Column headers: names from the row metadata, kinds from the first
-    // row's mapped values (empty result → no columns).
-    let columns = match (raw_rows.first(), rows.first()) {
-      (Some(meta), Some(first)) => meta
-        .columns()
-        .iter()
-        .enumerate()
-        .map(|(i, c)| Column {
-          name: c.name().to_string(),
-          kind: first[i].kind(),
-        })
-        .collect(),
-      // No rows to infer kinds from, but a valid SELECT still has a column
-      // schema (e.g. `SELECT a, b WHERE 0`) — describe the statement so the
-      // headers survive. Kinds come from the declared affinity (best-effort;
-      // unreliable for literal columns, hence the `Null` fallback).
-      _ => {
-        let described = (&self.pool).describe(sql).await.map_err(driver_err)?;
-        described
-          .columns()
-          .iter()
-          .map(|c| Column {
-            name: c.name().to_string(),
-            kind: typekind_from_class(c.type_info().name()),
-          })
-          .collect()
-      }
-    };
+    let columns = self.columns_for(sql, &raw_rows, &rows).await?;
 
     // `affected` is owned by the write path (a later, sacred phase); a read
     // query leaves it `None`.
@@ -92,6 +65,56 @@ impl Driver for SqliteDriver {
 
   fn kind(&self) -> Backend {
     Backend::Sqlite
+  }
+}
+
+impl SqliteDriver {
+  /// Build the result columns. Names come from the row metadata (or `describe`
+  /// for an empty result). A column's kind is the first **non-null** cell's
+  /// runtime type — a nullable column's first row is often NULL, so reading
+  /// row 0 alone is wrong. Columns with no non-null cell (and empty results)
+  /// fall back to the declared affinity via `describe`.
+  async fn columns_for(&self, sql: &str, raw_rows: &[SqliteRow], rows: &[Row]) -> Result<Vec<Column>> {
+    let runtime: Vec<Option<TypeKind>> = match raw_rows.first() {
+      Some(meta) => (0..meta.len()).map(|i| first_non_null_kind(rows, i)).collect(),
+      None => Vec::new(),
+    };
+    // Only describe when a declared affinity is actually needed — an empty
+    // result, or a column that is entirely NULL.
+    let described = if raw_rows.is_empty() || runtime.iter().any(Option::is_none) {
+      Some((&self.pool).describe(sql).await.map_err(driver_err)?)
+    } else {
+      None
+    };
+    let affinity = |i: usize| {
+      described
+        .as_ref()
+        .and_then(|d| d.columns().get(i))
+        .map_or(TypeKind::Null, |c| typekind_from_class(c.type_info().name()))
+    };
+
+    Ok(match raw_rows.first() {
+      Some(meta) => meta
+        .columns()
+        .iter()
+        .enumerate()
+        .map(|(i, c)| Column {
+          name: c.name().to_string(),
+          kind: runtime[i].unwrap_or_else(|| affinity(i)),
+        })
+        .collect(),
+      // Empty result: `described` is `Some` (we needed it above) — headers
+      // survive (e.g. `SELECT a, b WHERE 0`) with their declared affinity.
+      None => described.as_ref().map_or_else(Vec::new, |d| {
+        d.columns()
+          .iter()
+          .map(|c| Column {
+            name: c.name().to_string(),
+            kind: typekind_from_class(c.type_info().name()),
+          })
+          .collect()
+      }),
+    })
   }
 }
 
@@ -151,6 +174,17 @@ fn value_at(row: &SqliteRow, i: usize) -> Result<Value> {
     }
   };
   Ok(value)
+}
+
+/// The kind of the first non-null cell in column `i` across `rows`, or `None`
+/// if every cell is null. A nullable column's first row is often NULL, so the
+/// kind can't be read off row 0 alone.
+fn first_non_null_kind(rows: &[Row], i: usize) -> Option<TypeKind> {
+  rows
+    .iter()
+    .map(|row| &row[i])
+    .find(|value| !matches!(value, Value::Null))
+    .map(Value::kind)
 }
 
 /// Map a SQLite storage-class / declared-affinity name to a `TypeKind`. Used

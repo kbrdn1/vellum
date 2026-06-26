@@ -98,6 +98,19 @@ async fn column_kind_follows_the_cell_value() {
 }
 
 #[tokio::test]
+async fn column_kind_skips_leading_nulls() {
+  // A nullable column whose first row is NULL must still report the kind of a
+  // later non-null cell, not `Null`.
+  let (driver, _db) = seeded_driver().await;
+  let result = driver
+    .query("select null as v union all select 'text' as v")
+    .await
+    .expect("query");
+  assert_eq!(result.rows[0][0], Value::Null);
+  assert_eq!(result.columns[0].kind, TypeKind::Text);
+}
+
+#[tokio::test]
 async fn invalid_sql_returns_driver_error() {
   let (driver, _db) = seeded_driver().await;
   let outcome = driver.query("select * from does_not_exist").await;
