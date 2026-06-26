@@ -61,6 +61,9 @@ sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio",
 [dev-dependencies]
 assert_cmd = "2"
 predicates = "3"
+# Driver tests seed a throwaway on-disk SQLite db (the read-only driver can't
+# open `:memory:`), cleaned up on drop.
+tempfile = "3"
 
 [profile.release]
 opt-level = 3

@@ -19,12 +19,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `query` / `kind`) and its first and only impl, `SqliteDriver` (sqlx, bundled
   libsqlite3, in-process — no system dependency). Maps SQLite's five storage
   classes (NULL / INTEGER / REAL / TEXT / BLOB) onto the normalised `Value`
-  and reports the `Backend::Sqlite` tag. The read path is read-only by
-  construction (`PRAGMA query_only`), so a write through `query()` is refused
-  by the engine — intentional writes await the gated write/diff path. The port
-  stays minimal on purpose; it freezes with the richer
-  capabilities/introspection in Phase 1, when Postgres / MySQL become the
-  2nd/3rd impls.
+  and reports the `Backend::Sqlite` tag. The read path opens connections
+  read-only (`SQLITE_OPEN_READONLY`), so a write through `query()` is refused
+  by the engine and can't be re-enabled from SQL — intentional writes await
+  the gated write/diff path. The port stays minimal on purpose; it freezes
+  with the richer capabilities/introspection in Phase 1, when Postgres / MySQL
+  become the 2nd/3rd impls.
 - **Phase 0 — domain model (#4):** the pure, cross-database `Value` enum
   (`Null` / `Bool` / `Int` / `Float` / `Text` / `Bytes` / `Json` / `Timestamp`)
   with a total `Value::kind() → TypeKind` mapping and a canonical `Display`,

@@ -23,9 +23,10 @@ pub trait Driver: Send + Sync {
 
   /// Run a single **read** statement and collect the full result into memory.
   ///
-  /// This is the read path. The SQLite impl opens its connections with
-  /// `PRAGMA query_only`, so a mutating statement is refused by the engine
-  /// rather than silently committed. Intentional writes go through the gated
+  /// This is the read path. The SQLite impl opens its connections read-only
+  /// (`SQLITE_OPEN_READONLY`), so a mutating statement is refused by the engine
+  /// rather than silently committed — and, unlike `PRAGMA query_only`, that
+  /// can't be undone from SQL. Intentional writes go through the gated
   /// `execute`/apply path (changeset → diff → confirm), a later sacred phase
   /// (ARCHITECTURE §4 splits read `query` from write `execute`; the write gate
   /// is tracked by #64). Streaming by batch is also a later-phase concern.

@@ -22,13 +22,13 @@ pub struct SqliteDriver {
 #[async_trait]
 impl Driver for SqliteDriver {
   async fn connect(dsn: &str) -> Result<Self> {
-    // The read path is read-only by construction: `PRAGMA query_only = ON`
-    // makes SQLite itself refuse writes on these connections, so `query()` can
-    // never silently mutate a database. Intentional writes go through the
-    // gated write/diff path (a later, sacred phase — tracked by #64).
-    let options = SqliteConnectOptions::from_str(dsn)
-      .map_err(driver_err)?
-      .pragma("query_only", "ON");
+    // The read path opens its connections read-only (SQLITE_OPEN_READONLY), so
+    // a mutating statement is refused by SQLite itself. Unlike `PRAGMA
+    // query_only`, this can't be undone from SQL (`PRAGMA query_only=OFF` or a
+    // multi-statement payload) — the underlying file handle is read-only.
+    // Intentional writes go through the gated write/diff path (a later, sacred
+    // phase — tracked by #64).
+    let options = SqliteConnectOptions::from_str(dsn).map_err(driver_err)?.read_only(true);
     let pool = SqlitePool::connect_with(options).await.map_err(driver_err)?;
     Ok(Self { pool })
   }
