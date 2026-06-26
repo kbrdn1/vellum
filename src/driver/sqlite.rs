@@ -13,7 +13,6 @@ use sqlx::{Column as _, Executor as _, Row as _, TypeInfo as _, ValueRef as _};
 use sqlparser::ast::Statement;
 use sqlparser::dialect::SQLiteDialect;
 use sqlparser::parser::Parser;
-use sqlparser::tokenizer::{Token, Tokenizer};
 
 use crate::driver::Driver;
 use crate::error::{Result, VellumError};
@@ -106,60 +105,29 @@ impl Driver for SqliteDriver {
 /// do *not* false-reject a possibly-valid read — it falls through to the
 /// read-only connection, which still refuses any write to the main database.
 fn ensure_read_only_query(sql: &str) -> Result<()> {
-  // 1. Reject multi-statement payloads at the *token* level. This is parser-
-  //    independent, so it still fires when the full parser can't handle some
-  //    SQLite syntax — closing the `<unparseable>; <write>` bypass.
-  if is_multi_statement(sql)? {
-    return Err(VellumError::Driver(
-      "read-only path: exactly one statement is allowed".into(),
-    ));
-  }
-  // 2. Single statement: if the parser understands it, require a read-only
-  //    query. If it doesn't (sqlparser's SQLite coverage isn't total), don't
-  //    false-reject a valid single read — the read-only connection backstops
-  //    any write to the main database.
-  let Ok(statements) = Parser::parse_sql(&SQLiteDialect {}, sql) else {
-    return Ok(());
-  };
+  // Fail closed: the read path runs only what it can verify is a single
+  // read-only query. Anything sqlparser can't parse — or that parses as a
+  // write or as multiple statements — is refused rather than handed to the
+  // database. Allowing unparsed SQL through is unsafe: some statements write
+  // even on a read-only handle (e.g. `VACUUM INTO 'file'` copies the db to
+  // disk), and an unparsed chain could smuggle a write past a one-statement
+  // check. Intentional writes go through the gated write/diff path (#64).
+  let statements = Parser::parse_sql(&SQLiteDialect {}, sql)
+    .map_err(|e| VellumError::Driver(format!("read-only path: could not parse SQL ({e})")))?;
   match statements.as_slice() {
     // A single SELECT-style query (covers `WITH … SELECT`, `VALUES`, unions),
     // or empty / comment-only input (harmless — let SQLite handle it).
     [Statement::Query(_)] | [] => Ok(()),
-    _ => Err(VellumError::Driver(
+    [_] => Err(VellumError::Driver(
       "read-only path: only SELECT-style queries run here; writes go through \
        the write/diff gate"
         .into(),
     )),
+    stmts => Err(VellumError::Driver(format!(
+      "read-only path: exactly one statement is allowed, got {}",
+      stmts.len()
+    ))),
   }
-}
-
-/// Count top-level statements via the tokenizer (separated by `;`, ignoring
-/// whitespace and comments) and report whether there is more than one. Used as
-/// a parser-independent multi-statement guard. A tokenizer error (lexically
-/// broken input) is surfaced so the caller refuses it rather than executing.
-fn is_multi_statement(sql: &str) -> Result<bool> {
-  let tokens = Tokenizer::new(&SQLiteDialect {}, sql)
-    .tokenize()
-    .map_err(|e| VellumError::Driver(format!("could not tokenize SQL: {e}")))?;
-  let mut statements = 0usize;
-  let mut group_has_content = false;
-  for token in &tokens {
-    match token {
-      Token::SemiColon => {
-        if group_has_content {
-          statements += 1;
-        }
-        group_has_content = false;
-      }
-      // `Whitespace` covers spaces, newlines, and comments.
-      Token::Whitespace(_) => {}
-      _ => group_has_content = true,
-    }
-  }
-  if group_has_content {
-    statements += 1;
-  }
-  Ok(statements > 1)
 }
 
 /// Decode the `i`th cell of a SQLite row into a normalised `Value`, by its

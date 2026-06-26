@@ -139,17 +139,23 @@ async fn refuses_multi_statement_input() {
 }
 
 #[tokio::test]
-async fn refuses_multi_statement_even_when_unparseable() {
-  // The bypass: a statement sqlparser can't fully parse (`NOT INDEXED`),
-  // chained with a write. The token-level statement count catches the `;`
-  // before execution, so the parse-failure fallthrough can't be abused.
+async fn refuses_unparseable_input() {
+  // Fail closed: input sqlparser can't parse is refused, not handed to the
+  // database. This covers both a chained write behind unsupported syntax
+  // (`SELECT … NOT INDEXED; CREATE TEMP TABLE …`) and a single unparsed
+  // statement that still writes on a read-only handle (`VACUUM INTO 'file'`,
+  // which copies the db to disk — sqlparser 0.62 rejects its INTO clause).
   let (driver, _db) = seeded_driver().await;
-  let outcome = driver
-    .query("select * from items not indexed; create temp table t (x integer)")
-    .await;
   assert!(
-    outcome.is_err(),
+    driver
+      .query("select * from items not indexed; create temp table t (x integer)")
+      .await
+      .is_err(),
     "an unparseable multi-statement payload must be refused"
+  );
+  assert!(
+    driver.query("vacuum into 'snapshot.db'").await.is_err(),
+    "VACUUM INTO must be refused on the read path"
   );
 }
 
