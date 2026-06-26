@@ -2,8 +2,10 @@
 //! libsqlite3, in-process). Maps SQLite's five storage classes (NULL /
 //! INTEGER / REAL / TEXT / BLOB) onto the normalised `Value`.
 
+use std::str::FromStr;
+
 use async_trait::async_trait;
-use sqlx::sqlite::{SqlitePool, SqliteRow};
+use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqliteRow};
 // Trait methods are imported anonymously to avoid colliding with the domain
 // `Column` / `Row` types.
 use sqlx::{Column as _, Executor as _, Row as _, TypeInfo as _, ValueRef as _};
@@ -20,7 +22,14 @@ pub struct SqliteDriver {
 #[async_trait]
 impl Driver for SqliteDriver {
   async fn connect(dsn: &str) -> Result<Self> {
-    let pool = SqlitePool::connect(dsn).await.map_err(driver_err)?;
+    // The read path is read-only by construction: `PRAGMA query_only = ON`
+    // makes SQLite itself refuse writes on these connections, so `query()` can
+    // never silently mutate a database. Intentional writes go through the
+    // gated write/diff path (a later, sacred phase — tracked by #64).
+    let options = SqliteConnectOptions::from_str(dsn)
+      .map_err(driver_err)?
+      .pragma("query_only", "ON");
+    let pool = SqlitePool::connect_with(options).await.map_err(driver_err)?;
     Ok(Self { pool })
   }
 

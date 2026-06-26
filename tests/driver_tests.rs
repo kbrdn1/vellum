@@ -58,6 +58,23 @@ async fn invalid_sql_returns_driver_error() {
 }
 
 #[tokio::test]
+async fn query_refuses_writes_on_the_read_path() {
+  // The read path is read-only by construction (`PRAGMA query_only`): SQLite
+  // itself rejects a write statement, so `query()` can never silently mutate
+  // a database. Intentional writes go through the gated write/diff path
+  // (a later, sacred phase — tracked by #64).
+  let driver = memory_driver().await;
+  let err = driver
+    .query("create table t (x integer)")
+    .await
+    .expect_err("a write through the read path must be refused");
+  assert!(
+    err.to_string().to_lowercase().contains("readonly"),
+    "expected a read-only refusal from SQLite, got: {err}"
+  );
+}
+
+#[tokio::test]
 async fn empty_select_still_reports_columns() {
   // A valid SELECT that returns zero rows still has a column schema
   // (`SELECT ... WHERE 0`). The headers must survive an empty result so the
