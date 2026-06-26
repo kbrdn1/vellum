@@ -1,0 +1,268 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "tag to release (e.g. v0.1.0)"
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: build (${{ matrix.target }})
+    # Stable releases only. GitHub's `v*.*.*` tag glob also matches
+    # `v0.7.0-rc.3`, so keep the stable workflow from building artifacts for
+    # tags that belong to `pre-release.yml`.
+    if: |
+      !contains(github.event.inputs.tag || github.ref_name, '-rc.') &&
+      !contains(github.event.inputs.tag || github.ref_name, '-alpha.') &&
+      !contains(github.event.inputs.tag || github.ref_name, '-beta.')
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            archive: tar.gz
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            archive: tar.gz
+            cross: true
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            archive: tar.gz
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            archive: tar.gz
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            archive: zip
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+
+      - name: install cross (linux aarch64)
+        if: matrix.cross == true
+        run: cargo install cross --locked
+
+      - name: build (cargo)
+        if: matrix.cross != true
+        run: cargo build --release --target ${{ matrix.target }} --locked
+
+      - name: build (cross)
+        if: matrix.cross == true
+        run: cross build --release --target ${{ matrix.target }} --locked
+
+      - name: package (unix)
+        if: matrix.os != 'windows-latest'
+        shell: bash
+        run: |
+          BIN_NAME="vellum"
+          STAGE="${BIN_NAME}-${{ github.ref_name }}-${{ matrix.target }}"
+          mkdir -p "dist/${STAGE}"
+          cp "target/${{ matrix.target }}/release/${BIN_NAME}" "dist/${STAGE}/"
+          cp README.md LICENSE.md CHANGELOG.md "dist/${STAGE}/"
+          tar -C dist -czf "dist/${STAGE}.tar.gz" "${STAGE}"
+          shasum -a 256 "dist/${STAGE}.tar.gz" > "dist/${STAGE}.tar.gz.sha256"
+
+      - name: package (windows)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        # Set-Content -Encoding ascii ensures the sidecar is plain ASCII (no
+        # UTF-16 BOM that PowerShell's `Out-File` would add by default) so the
+        # checksum file is verifiable by `sha256sum -c` on other platforms.
+        run: |
+          $BIN_NAME = "vellum.exe"
+          $STAGE = "vellum-${{ github.ref_name }}-${{ matrix.target }}"
+          New-Item -ItemType Directory -Force -Path "dist/$STAGE" | Out-Null
+          Copy-Item "target/${{ matrix.target }}/release/$BIN_NAME" "dist/$STAGE/"
+          Copy-Item README.md, LICENSE.md, CHANGELOG.md "dist/$STAGE/"
+          Compress-Archive -Path "dist/$STAGE" -DestinationPath "dist/$STAGE.zip"
+          $hash = (Get-FileHash -Algorithm SHA256 "dist/$STAGE.zip").Hash.ToLower()
+          Set-Content -Path "dist/$STAGE.zip.sha256" -Encoding ascii -Value "$hash  $STAGE.zip"
+
+      - name: upload artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: vellum-${{ matrix.target }}
+          path: |
+            dist/*.tar.gz
+            dist/*.tar.gz.sha256
+            dist/*.zip
+            dist/*.zip.sha256
+          if-no-files-found: error
+
+  release:
+    name: github release
+    needs: [build]
+    if: |
+      !contains(github.event.inputs.tag || github.ref_name, '-rc.') &&
+      !contains(github.event.inputs.tag || github.ref_name, '-alpha.') &&
+      !contains(github.event.inputs.tag || github.ref_name, '-beta.')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: download all artifacts
+        uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+
+      # Release notes come from the per-version file under `changelogs/`,
+      # not the top-level `CHANGELOG.md` (which is only the in-progress
+      # index — entries get moved into `changelogs/X.Y.Z.md` when the
+      # release is cut). Sourcing from the index would publish an empty
+      # body with the past-releases list, as observed for v0.6.0 / v0.6.0-rc.1
+      # before this fix.
+      - name: resolve changelog path
+        id: changelog
+        shell: bash
+        run: |
+          TAG="${{ github.ref_name }}"
+          VERSION="${TAG#v}"
+          CHANGELOG_PATH="changelogs/${VERSION}.md"
+          if [ ! -f "${CHANGELOG_PATH}" ]; then
+            echo "::error::Expected ${CHANGELOG_PATH} to exist for tag ${TAG} — release notes would otherwise fall back to the empty CHANGELOG.md index."
+            exit 1
+          fi
+          echo "path=${CHANGELOG_PATH}" >> "$GITHUB_OUTPUT"
+
+      - name: publish release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release edit "$TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "$TAG" \
+              --notes-file "${{ steps.changelog.outputs.path }}" \
+              --draft=false \
+              --prerelease=false
+          else
+            gh release create "$TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "$TAG" \
+              --notes-file "${{ steps.changelog.outputs.path }}" \
+              --verify-tag \
+              --draft=false \
+              --prerelease=false
+          fi
+
+          gh release upload "$TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --clobber \
+            dist/*.tar.gz \
+            dist/*.tar.gz.sha256 \
+            dist/*.zip \
+            dist/*.zip.sha256
+
+  homebrew-tap-update:
+    name: update homebrew tap
+    needs: [release]
+    runs-on: ubuntu-latest
+    # Stable releases only — rc/alpha/beta must never reach `brew install vellum`,
+    # otherwise users tracking the tap would silently move to a pre-release.
+    # Intentionally does NOT gate on `event_name == 'push'`: the documented
+    # recovery path (`gh workflow run release.yml --ref <tag>`) needs to
+    # re-drive this job after a transient failure, which is a
+    # workflow_dispatch event. The suffix filter alone is sufficient
+    # because dispatch-from-a-branch would already break the upstream
+    # `build` / `release` jobs (they archive `${{ github.ref_name }}`),
+    # so the whole workflow is implicitly tag-scoped.
+    if: |
+      !contains(github.event.inputs.tag || github.ref_name, '-rc.') &&
+      !contains(github.event.inputs.tag || github.ref_name, '-alpha.') &&
+      !contains(github.event.inputs.tag || github.ref_name, '-beta.')
+    # While HOMEBREW_TAP_TOKEN is being provisioned the first time, a missing
+    # secret would fail this job. Keep it advisory so the GitHub release
+    # still lands and the tap refresh can be re-driven manually via
+    # workflow_dispatch once the secret exists. Flip to false after the
+    # first successful sync (see CONTRIBUTING.md > Releases > Homebrew tap).
+    continue-on-error: true
+    steps:
+      - name: verify HOMEBREW_TAP_TOKEN is configured
+        env:
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          if [ -z "${HOMEBREW_TAP_TOKEN:-}" ]; then
+            echo "::error::HOMEBREW_TAP_TOKEN secret is not configured."
+            echo "Bootstrap: see CONTRIBUTING.md > Releases > Homebrew tap setup."
+            exit 1
+          fi
+
+      - name: checkout vellum (template + render script)
+        uses: actions/checkout@v6
+        with:
+          path: vellum
+
+      - name: checkout kbrdn1/homebrew-tap
+        uses: actions/checkout@v6
+        with:
+          repository: kbrdn1/homebrew-tap
+          path: homebrew-tap
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+
+      - name: fetch sha256 sidecars from the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          mkdir -p sha
+          for target in aarch64-apple-darwin x86_64-apple-darwin; do
+            gh release download "$TAG" \
+              --repo kbrdn1/vellum \
+              --pattern "vellum-${TAG}-${target}.tar.gz.sha256" \
+              --dir sha
+          done
+          ls -la sha
+
+      - name: render Formula/vellum.rb
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          VERSION="${TAG#v}"
+          SHA_ARM64=$(awk '{print $1}' "sha/vellum-${TAG}-aarch64-apple-darwin.tar.gz.sha256")
+          SHA_X86_64=$(awk '{print $1}' "sha/vellum-${TAG}-x86_64-apple-darwin.tar.gz.sha256")
+          mkdir -p homebrew-tap/Formula
+          sh vellum/.github/scripts/render-tap-formula.sh \
+            "$TAG" "$VERSION" "$SHA_ARM64" "$SHA_X86_64" \
+            vellum/packaging/homebrew/vellum.rb.template \
+            > homebrew-tap/Formula/vellum.rb
+          echo "=== rendered Formula/vellum.rb ==="
+          cat homebrew-tap/Formula/vellum.rb
+
+      - name: commit + push to tap
+        working-directory: homebrew-tap
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          git config user.name  "vellum release bot"
+          git config user.email "release-bot@vellum.local"
+          git add Formula/vellum.rb
+          if git diff --cached --quiet; then
+            echo "Formula/vellum.rb unchanged — nothing to push."
+            exit 0
+          fi
+          git commit -m "vellum ${TAG#v} (${TAG})"
+          git push

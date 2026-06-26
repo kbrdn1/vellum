@@ -1,0 +1,55 @@
+version: 2
+updates:
+  - package-ecosystem: "cargo"
+    directory: "/"
+    target-branch: "dev"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "08:00"
+      timezone: "Europe/Paris"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "chore"
+    commit-message:
+      prefix: "⬆️ chore(deps)"
+      include: "scope"
+    # Groups activate as the matching crates land (Phase 0+). Harmless no-ops
+    # until then. See `.roadmap/ARCHITECTURE.md` for the planned stack.
+    groups:
+      tui:
+        patterns:
+          - "ratatui*"
+          - "crossterm*"
+          - "tui-*"
+      async:
+        patterns:
+          - "tokio*"
+      sql-stack:
+        patterns:
+          - "sqlx*"
+          - "sqlparser*"
+      serde-stack:
+        patterns:
+          - "serde*"
+          - "toml*"
+      clap-stack:
+        patterns:
+          - "clap*"
+      test-stack:
+        patterns:
+          - "assert_cmd*"
+          - "predicates*"
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    target-branch: "dev"
+    schedule:
+      interval: "monthly"
+    labels:
+      - "ci"
+      - "dependencies"
+    commit-message:
+      prefix: "⬆️ ci(actions)"
+      include: "scope"

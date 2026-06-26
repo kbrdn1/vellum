@@ -1,0 +1,16 @@
+/target
+**/*.rs.bk
+Cargo.lock.bak
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Local agent/tool state
+.claude/
+.serena/
+
+# Private planning corpus — roadmap / architecture / phase docs.
+# Visible to me locally, never published to the repo.
+.roadmap/

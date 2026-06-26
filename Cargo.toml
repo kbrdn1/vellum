@@ -1,0 +1,59 @@
+[package]
+name = "vellum"
+version = "0.1.0"
+edition = "2021"
+# MSRV is the floor required by every use in the crate. Aligned with gwm
+# (1.86) because Vellum reuses the same async/TUI infra (ratatui 0.30,
+# crossterm 0.29, portable-pty / tui-term for the PTY overlay) once the
+# Phase 0 stack lands. CI's clippy MSRV lint enforces it.
+rust-version = "1.86"
+description = "TUI SQL client — browse, query, edit databases with a GitHub-like diff, in the terminal"
+authors = ["Kylian Bardini"]
+license = "MIT"
+repository = "https://github.com/kbrdn1/vellum"
+readme = "README.md"
+keywords = ["sql", "database", "tui", "cli", "ratatui"]
+categories = ["command-line-utilities", "database"]
+
+# cargo-binstall: pull the prebuilt binary from the GitHub Release instead
+# of compiling from source. Mirrors the release workflows' artefact naming —
+# `vellum-v{version}-{target}.tar.gz` (`.zip` on windows) — and the
+# in-archive layout `vellum-v{version}-{target}/{vellum|vellum.exe}`.
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/vellum-v{ version }-{ target }.tar.gz"
+pkg-fmt = "tgz"
+bin-dir = "vellum-v{ version }-{ target }/{ bin }"
+
+[package.metadata.binstall.overrides.x86_64-pc-windows-msvc]
+pkg-url = "{ repo }/releases/download/v{ version }/vellum-v{ version }-{ target }.zip"
+pkg-fmt = "zip"
+
+[lib]
+name = "vellum"
+path = "src/lib.rs"
+
+[[bin]]
+name = "vellum"
+path = "src/main.rs"
+
+# The full Vellum stack — tokio runtime, ratatui/crossterm TUI, sqlx
+# drivers (pg/mysql/sqlite by default; duckdb/mssql/clickhouse/ssh behind
+# optional features), sqlparser, tui-textarea, keyring — is introduced
+# per-phase, NOT prebuilt at scaffold time. See `.roadmap/ARCHITECTURE.md`
+# (§stack, §features Cargo) for the frozen plan and the Phase 0 spike that
+# wires the first `Driver` + SQLite.
+
+[dependencies]
+clap = { version = "4.5", features = ["derive", "color"] }
+anyhow = "1"
+thiserror = "2"
+
+[dev-dependencies]
+assert_cmd = "2"
+predicates = "3"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true
