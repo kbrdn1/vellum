@@ -139,6 +139,21 @@ async fn refuses_multi_statement_input() {
 }
 
 #[tokio::test]
+async fn refuses_multi_statement_even_when_unparseable() {
+  // The bypass: a statement sqlparser can't fully parse (`NOT INDEXED`),
+  // chained with a write. The token-level statement count catches the `;`
+  // before execution, so the parse-failure fallthrough can't be abused.
+  let (driver, _db) = seeded_driver().await;
+  let outcome = driver
+    .query("select * from items not indexed; create temp table t (x integer)")
+    .await;
+  assert!(
+    outcome.is_err(),
+    "an unparseable multi-statement payload must be refused"
+  );
+}
+
+#[tokio::test]
 async fn pragma_query_only_off_cannot_unlock_writes() {
   // The documented bypass: flip query_only off, then write, in one payload.
   // It is multi-statement, so the parser guard refuses it before execution.
