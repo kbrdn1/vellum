@@ -1,7 +1,9 @@
-//! CLI surface (clap). The subcommand set grows phase by phase — Phase 0
-//! adds `open` / `query` against the first `Driver`. For now the binary is
-//! an early scaffold: `--help` / `--version` work, and a no-arg invocation
-//! prints a short banner pointing at the (private) roadmap.
+//! CLI surface (clap). The surface grows phase by phase — Phase 0 adds the
+//! one-shot `--db <file> "<sql>"` mode (and its TUI counterpart) against the
+//! first `Driver`. For now the binary is an early scaffold: `--help` /
+//! `--version` work, and a no-arg invocation prints a short banner. `run` is
+//! `async` because the driver layer it will dispatch to is async on the
+//! tokio runtime bootstrapped in `main`.
 
 use crate::error::Result;
 use clap::Parser;
@@ -18,8 +20,9 @@ databases with a GitHub-like diff). Early scaffold: no subcommands yet."
 pub struct Cli {}
 
 /// Run the resolved CLI. Returns `Ok(())` on success; the binary maps an
-/// `Err` to a non-zero exit in `main`.
-pub fn run(_cli: Cli) -> Result<()> {
+/// `Err` to a non-zero exit in `main`. Async to match the driver layer it
+/// will dispatch to (Phase 0).
+pub async fn run(_cli: Cli) -> Result<()> {
   println!("vellum — early scaffold. No subcommands yet; run `vellum --help`.");
   Ok(())
 }
