@@ -30,3 +30,13 @@ fn version_prints_semver() {
     .success()
     .stdout(predicate::str::contains(env!("CARGO_PKG_VERSION")));
 }
+
+#[test]
+fn unknown_flag_exits_nonzero() {
+  // The exit-code contract: an unrecognised flag must fail (clap exits 2, so
+  // assert `.failure()` rather than a specific code). Pins the spine that the
+  // one-shot mode (Phase 0) will build its `exit 0 / exit 1` contract on.
+  let mut cmd = Command::cargo_bin("vellum").unwrap();
+  cmd.arg("--definitely-not-a-real-flag");
+  cmd.assert().failure();
+}
