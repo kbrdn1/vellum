@@ -15,6 +15,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Phase 0 — binary skeleton (#3):** async entry point on a `tokio` runtime
+  (`#[tokio::main]`), a typed `VellumError` surface with `Io` / `Arg` /
+  `Driver` categories (`thiserror`), and the unknown-flag exit-code contract
+  pinned by an e2e test. The one-shot `--db <file> "<sql>"` argument surface
+  and its TUI/one-shot dispatch land with the SQLite driver (#5, #7).
 - Initial project scaffold: Cargo `bin` + `lib`, 2-space rustfmt, CI
   (fmt / clippy / test matrix / hook-smoke / audit), release + pre-release
   workflows, Homebrew tap template, dependabot, issue / PR templates, opt-in
