@@ -15,6 +15,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Phase 0 — SQLite driver (#5):** the `Driver` port sketch (`connect` /
+  `query` / `kind`) and its first and only impl, `SqliteDriver` (sqlx, bundled
+  libsqlite3, in-process — no system dependency). Maps SQLite's five storage
+  classes (NULL / INTEGER / REAL / TEXT / BLOB) onto the normalised `Value`
+  and reports the `Backend::Sqlite` tag. The port stays minimal on purpose;
+  it freezes with the richer capabilities/introspection in Phase 1, when
+  Postgres / MySQL become the 2nd/3rd impls.
 - **Phase 0 — domain model (#4):** the pure, cross-database `Value` enum
   (`Null` / `Bool` / `Int` / `Float` / `Text` / `Bytes` / `Json` / `Timestamp`)
   with a total `Value::kind() → TypeKind` mapping and a canonical `Display`,
