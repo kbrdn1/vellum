@@ -15,6 +15,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Phase 0 — domain model (#4):** the pure, cross-database `Value` enum
+  (`Null` / `Bool` / `Int` / `Float` / `Text` / `Bytes` / `Json` / `Timestamp`)
+  with a total `Value::kind() → TypeKind` mapping and a canonical `Display`,
+  plus the row-oriented `QueryResult { columns, rows, affected }` container
+  (`Column`, `Row`). Conservative for SQLite (no I/O); `Decimal` / `Uuid` /
+  `Array` and a parsed JSON payload land with Postgres.
 - **Phase 0 — binary skeleton (#3):** async entry point on a `tokio` runtime
   (`#[tokio::main]`), a typed `VellumError` surface with `Io` / `Arg` /
   `Driver` categories (`thiserror`), and the unknown-flag exit-code contract
