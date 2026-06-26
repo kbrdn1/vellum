@@ -57,6 +57,10 @@ async-trait = "0.1"
 # `Driver` port. `default-features = false` skips the unused macros / migrate /
 # any features.
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite"] }
+# The single SQL-understanding layer (ARCHITECTURE §stack). Used here to keep
+# the read path read-only: parse the input and require exactly one
+# `SELECT`-style statement before it reaches the database.
+sqlparser = "0.62"
 
 [dev-dependencies]
 assert_cmd = "2"

@@ -10,6 +10,10 @@ use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqliteRow};
 // `Column` / `Row` types.
 use sqlx::{Column as _, Executor as _, Row as _, TypeInfo as _, ValueRef as _};
 
+use sqlparser::ast::Statement;
+use sqlparser::dialect::SQLiteDialect;
+use sqlparser::parser::Parser;
+
 use crate::driver::Driver;
 use crate::error::{Result, VellumError};
 use crate::model::{Backend, Column, QueryResult, Row, TypeKind, Value};
@@ -34,6 +38,7 @@ impl Driver for SqliteDriver {
   }
 
   async fn query(&self, sql: &str) -> Result<QueryResult> {
+    ensure_read_only_query(sql)?;
     let raw_rows = sqlx::query(sql).fetch_all(&self.pool).await.map_err(driver_err)?;
 
     // Map every cell first — the runtime value type is the single reliable
@@ -87,6 +92,36 @@ impl Driver for SqliteDriver {
 
   fn kind(&self) -> Backend {
     Backend::Sqlite
+  }
+}
+
+/// Guard the read path: reject anything that isn't a single read-only query
+/// before it reaches the database. The primary write-safety boundary (the
+/// read-only connection is a backstop): `CREATE TEMP TABLE`, DML/DDL, and
+/// multi-statement payloads are refused here, so they never run outside the
+/// gated write/diff path (#64).
+///
+/// If sqlparser can't parse the input (its SQLite coverage isn't total), we
+/// do *not* false-reject a possibly-valid read — it falls through to the
+/// read-only connection, which still refuses any write to the main database.
+fn ensure_read_only_query(sql: &str) -> Result<()> {
+  let Ok(statements) = Parser::parse_sql(&SQLiteDialect {}, sql) else {
+    return Ok(());
+  };
+  match statements.as_slice() {
+    // A single SELECT-style query (covers `WITH … SELECT`, `VALUES`, unions).
+    [Statement::Query(_)] => Ok(()),
+    // Empty / comment-only — harmless; let SQLite handle it.
+    [] => Ok(()),
+    [_] => Err(VellumError::Driver(
+      "read-only path: only SELECT-style queries run here; writes go through \
+       the write/diff gate"
+        .into(),
+    )),
+    stmts => Err(VellumError::Driver(format!(
+      "read-only path: exactly one statement is allowed, got {}",
+      stmts.len()
+    ))),
   }
 }
 

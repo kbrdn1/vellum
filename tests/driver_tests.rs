@@ -106,32 +106,49 @@ async fn invalid_sql_returns_driver_error() {
 
 #[tokio::test]
 async fn query_refuses_writes_on_the_read_path() {
-  // The read path opens its connection read-only (SQLITE_OPEN_READONLY), so a
-  // write is refused by the engine. Intentional writes go through the gated
-  // write/diff path (#64).
+  // A write is rejected by the parser guard before it reaches the database
+  // (the read-only connection is a backstop). Intentional writes go through
+  // the gated write/diff path (#64).
   let (driver, _db) = seeded_driver().await;
   let err = driver
     .query("create table t (x integer)")
     .await
     .expect_err("a write through the read path must be refused");
   assert!(
-    err.to_string().to_lowercase().contains("readonly"),
-    "expected a read-only refusal from SQLite, got: {err}"
+    err.to_string().contains("read-only path"),
+    "expected a read-only-path refusal, got: {err}"
   );
 }
 
 #[tokio::test]
+async fn refuses_create_temp_table() {
+  // `SQLITE_OPEN_READONLY` alone wouldn't catch a TEMP-schema write (it's not
+  // the main file); the parser guard rejects it before execution.
+  let (driver, _db) = seeded_driver().await;
+  let outcome = driver.query("create temp table t (x integer)").await;
+  assert!(outcome.is_err(), "CREATE TEMP TABLE must be refused");
+}
+
+#[tokio::test]
+async fn refuses_multi_statement_input() {
+  // sqlx-sqlite would run every statement and merge their rows under the first
+  // header; the guard rejects multi-statement input before execution.
+  let (driver, _db) = seeded_driver().await;
+  let outcome = driver.query("select 1 as a; select 2 as b, 3 as c").await;
+  assert!(outcome.is_err(), "multi-statement input must be refused");
+}
+
+#[tokio::test]
 async fn pragma_query_only_off_cannot_unlock_writes() {
-  // The bypass a read-only file handle defends against: flip query_only off,
-  // then write, in one multi-statement payload. A read-only connection makes
-  // it impossible — the write still fails.
+  // The documented bypass: flip query_only off, then write, in one payload.
+  // It is multi-statement, so the parser guard refuses it before execution.
   let (driver, _db) = seeded_driver().await;
   let outcome = driver
     .query("pragma query_only = off; create table t (x integer)")
     .await;
   assert!(
     outcome.is_err(),
-    "a read-only connection must refuse writes even after PRAGMA query_only=off"
+    "the query_only=off bypass must be refused on the read path"
   );
 }
 

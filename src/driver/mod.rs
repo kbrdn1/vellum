@@ -23,13 +23,15 @@ pub trait Driver: Send + Sync {
 
   /// Run a single **read** statement and collect the full result into memory.
   ///
-  /// This is the read path. The SQLite impl opens its connections read-only
-  /// (`SQLITE_OPEN_READONLY`), so a mutating statement is refused by the engine
-  /// rather than silently committed — and, unlike `PRAGMA query_only`, that
-  /// can't be undone from SQL. Intentional writes go through the gated
-  /// `execute`/apply path (changeset → diff → confirm), a later sacred phase
-  /// (ARCHITECTURE §4 splits read `query` from write `execute`; the write gate
-  /// is tracked by #64). Streaming by batch is also a later-phase concern.
+  /// This is the read path. The SQLite impl validates the input with
+  /// `sqlparser` (exactly one `SELECT`-style statement — `INSERT` / `UPDATE` /
+  /// `DELETE` / DDL, `CREATE TEMP`, and multi-statement payloads are refused)
+  /// and opens its connections read-only (`SQLITE_OPEN_READONLY`) as a
+  /// backstop, so a mutating statement can't run here. Intentional writes go
+  /// through the gated `execute`/apply path (changeset → diff → confirm), a
+  /// later sacred phase (ARCHITECTURE §4 splits read `query` from write
+  /// `execute`; the write gate is tracked by #64). Streaming by batch is also
+  /// a later-phase concern.
   async fn query(&self, sql: &str) -> Result<QueryResult>;
 
   /// Which engine this driver talks to.
