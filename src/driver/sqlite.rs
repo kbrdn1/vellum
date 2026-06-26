@@ -6,11 +6,11 @@ use async_trait::async_trait;
 use sqlx::sqlite::{SqlitePool, SqliteRow};
 // Trait methods are imported anonymously to avoid colliding with the domain
 // `Column` / `Row` types.
-use sqlx::{Column as _, Row as _, TypeInfo as _, ValueRef as _};
+use sqlx::{Column as _, Executor as _, Row as _, TypeInfo as _, ValueRef as _};
 
 use crate::driver::Driver;
 use crate::error::{Result, VellumError};
-use crate::model::{Backend, Column, QueryResult, Row, Value};
+use crate::model::{Backend, Column, QueryResult, Row, TypeKind, Value};
 
 /// A connection to a SQLite database, backed by a sqlx pool.
 pub struct SqliteDriver {
@@ -50,7 +50,21 @@ impl Driver for SqliteDriver {
           kind: first[i].kind(),
         })
         .collect(),
-      _ => Vec::new(),
+      // No rows to infer kinds from, but a valid SELECT still has a column
+      // schema (e.g. `SELECT a, b WHERE 0`) — describe the statement so the
+      // headers survive. Kinds come from the declared affinity (best-effort;
+      // unreliable for literal columns, hence the `Null` fallback).
+      _ => {
+        let described = (&self.pool).describe(sql).await.map_err(driver_err)?;
+        described
+          .columns()
+          .iter()
+          .map(|c| Column {
+            name: c.name().to_string(),
+            kind: typekind_from_class(c.type_info().name()),
+          })
+          .collect()
+      }
     };
 
     // `affected` is owned by the write path (a later, sacred phase); a read
@@ -88,6 +102,19 @@ fn value_at(row: &SqliteRow, i: usize) -> Result<Value> {
     }
   };
   Ok(value)
+}
+
+/// Map a SQLite storage-class / declared-affinity name to a `TypeKind`. Used
+/// for column headers when there are no rows to infer from; unknown or literal
+/// affinities fall back to `Null`.
+fn typekind_from_class(name: &str) -> TypeKind {
+  match name {
+    "INTEGER" => TypeKind::Int,
+    "REAL" => TypeKind::Float,
+    "TEXT" => TypeKind::Text,
+    "BLOB" => TypeKind::Bytes,
+    _ => TypeKind::Null,
+  }
 }
 
 fn driver_err(e: sqlx::Error) -> VellumError {

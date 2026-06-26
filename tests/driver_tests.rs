@@ -56,3 +56,19 @@ async fn invalid_sql_returns_driver_error() {
   let outcome = driver.query("select * from does_not_exist").await;
   assert!(outcome.is_err(), "querying a missing table must error");
 }
+
+#[tokio::test]
+async fn empty_select_still_reports_columns() {
+  // A valid SELECT that returns zero rows still has a column schema
+  // (`SELECT ... WHERE 0`). The headers must survive an empty result so the
+  // table render can tell "empty with columns" from "no columns".
+  let driver = memory_driver().await;
+  let result = driver
+    .query("select 1 as n, 'x' as label where 0")
+    .await
+    .expect("query empty select");
+  assert!(result.rows.is_empty());
+  assert_eq!(result.columns.len(), 2);
+  assert_eq!(result.columns[0].name, "n");
+  assert_eq!(result.columns[1].name, "label");
+}
