@@ -347,3 +347,32 @@ async fn sqlite_introspection_folds_composite_and_implicit_foreign_keys() {
   assert_eq!(fk.references.columns, ["org_id", "user_id"]);
   assert_eq!(db.resolve(fk, "main").expect("FK resolves").name, "account");
 }
+
+#[tokio::test]
+async fn sqlite_introspection_keeps_user_tables_prefixed_like_sqlite() {
+  // `NOT LIKE 'sqlite_%'` would wrongly drop `sqlitexdata` — `_` is a LIKE
+  // wildcard, so it matches the `x`. Only the *literal* `sqlite_` internal
+  // tables must be excluded.
+  let file = NamedTempFile::new().expect("create temp db file");
+  let dsn = format!("sqlite:{}", file.path().display());
+  let setup = SqlitePool::connect_with(
+    SqliteConnectOptions::from_str(&dsn)
+      .expect("parse dsn")
+      .create_if_missing(true),
+  )
+  .await
+  .expect("open writable connection for seeding");
+  setup
+    .execute("create table sqlitexdata (id integer)")
+    .await
+    .expect("seed a table whose name starts with `sqlite`");
+  setup.close().await;
+  let driver = SqliteDriver::connect(&dsn).await.expect("connect read-only");
+
+  let catalog = driver.introspect().await.expect("introspect the schema");
+  let schema = catalog.database("main").unwrap().schema("main").unwrap();
+  assert!(
+    schema.relation("sqlitexdata").is_some(),
+    "a user table named like `sqlite...` (no literal `sqlite_`) must not be dropped"
+  );
+}
