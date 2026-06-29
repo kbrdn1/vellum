@@ -189,8 +189,7 @@ fn rejects_connection_names_that_collide_under_the_env_override() {
     backend = "postgres"
   "#;
 
-  let err =
-    Config::from_toml_str(toml).expect_err("colliding env-override names must be rejected");
+  let err = Config::from_toml_str(toml).expect_err("colliding env-override names must be rejected");
   assert!(
     matches!(err, VellumError::Config(_)),
     "expected VellumError::Config, got {err:?}"

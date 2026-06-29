@@ -50,8 +50,7 @@ fn resolve_prefers_the_env_dsn_over_the_store() {
     .set("envwins", &SecretString::from("stored-pw".to_string()))
     .unwrap();
 
-  let env =
-    |key: &str| Ok((key == "VELLUM_DSN_ENVWINS").then(|| "postgres://dsn-from-env".to_string()));
+  let env = |key: &str| Ok((key == "VELLUM_DSN_ENVWINS").then(|| "postgres://dsn-from-env".to_string()));
   let resolved = resolve_with("envwins", &store, env)
     .unwrap()
     .expect("env supplies a credential");
@@ -86,9 +85,7 @@ fn resolve_fails_closed_on_an_unreadable_env_override() {
   // fail closed, not silently fall back to the store — otherwise an override
   // meant to take precedence would quietly apply the wrong credential.
   let store = MemoryStore::default();
-  store
-    .set("c", &SecretString::from("stored-pw".to_string()))
-    .unwrap();
+  store.set("c", &SecretString::from("stored-pw".to_string())).unwrap();
 
   let err = resolve_with("c", &store, |_| {
     Err(VellumError::Secret("set but not valid UTF-8".to_string()))
