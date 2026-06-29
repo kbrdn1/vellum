@@ -93,9 +93,9 @@ impl Database {
   /// Resolve a foreign key declared in `from_schema` to the relation it
   /// references — following `references.schema` when set, else staying in
   /// `from_schema`. `None` if the target schema or relation is absent.
-  pub fn resolve(&self, _fk: &ForeignKey, _from_schema: &str) -> Option<&Relation> {
-    // stub — FK resolution is pinned by its own red test next
-    None
+  pub fn resolve(&self, fk: &ForeignKey, from_schema: &str) -> Option<&Relation> {
+    let target_schema = fk.references.schema.as_deref().unwrap_or(from_schema);
+    self.schema(target_schema)?.relation(&fk.references.relation)
   }
 }
 
