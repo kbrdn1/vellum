@@ -15,6 +15,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Phase 0 — one-shot CLI + TUI launch (#7):** `vellum --db <FILE> "<SQL>"`
+  connects the SQLite driver, runs the read-only query, and prints the rows to
+  stdout as tab-separated values (header first) — exit `0` on success, exit `1`
+  on a query/driver error (invalid SQL or a refused write). Add `-i` /
+  `--interactive` to render the same result in the scrollable TUI table (vim
+  navigation, arrow-key aliases, `q`/`Esc` to quit) via a thin crossterm event
+  loop (`tui/runtime.rs`). Shared e2e fixtures land in `tests/common/mod.rs` (a
+  seeded SQLite tempfile), and `tests/cli_binary.rs` pins the one-shot
+  contract: rows + exit 0, invalid SQL → exit 1, refused write → exit 1, `--db`
+  without a query → usage error. The `help` canary now tracks the `--db` /
+  `--interactive` surface.
 - **Phase 0 — result table TUI (#6):** render a `QueryResult` as a scrollable
   ratatui table with vim navigation, split TEA-style — a pure
   `tui/state/table.rs` (row cursor + horizontal column scroll, all clamped to
