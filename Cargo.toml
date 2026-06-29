@@ -96,7 +96,7 @@ ratatui = "0.30"
 # (Postgres now; MySQL with #11). Off by default so `cargo test` runs the
 # in-memory SQLite suite with no Docker. Enable with `cargo test --features
 # it-db` against a containerised server — the DSN comes from `VELLUM_IT_PG_DSN`
-# (default `postgres://postgres:postgres@localhost:5432/postgres`). See
+# (default `postgres://postgres@localhost:5432/postgres`). See
 # `.bdd-test/` and the `it-db` CI job.
 it-db = []
 

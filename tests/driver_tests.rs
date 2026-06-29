@@ -504,7 +504,7 @@ async fn sqlite_introspection_keeps_an_explicit_empty_named_target_column() {
 /// `cargo test` stays on in-memory SQLite (no Docker). Run with:
 ///
 /// ```bash
-/// VELLUM_IT_PG_DSN=postgres://postgres:postgres@localhost:5432/postgres \
+/// VELLUM_IT_PG_DSN=postgres://postgres@localhost:5432/postgres \
 ///   cargo test --features it-db --test driver_tests postgres_it
 /// ```
 ///
@@ -521,8 +521,7 @@ mod postgres_it {
   /// The PG DSN — from `VELLUM_IT_PG_DSN`, or a standard local default so the
   /// CI `it-db` job (service on `localhost:5432`) needs no extra env.
   fn dsn() -> String {
-    std::env::var("VELLUM_IT_PG_DSN")
-      .unwrap_or_else(|_| "postgres://postgres:postgres@localhost:5432/postgres".to_string())
+    std::env::var("VELLUM_IT_PG_DSN").unwrap_or_else(|_| "postgres://postgres@localhost:5432/postgres".to_string())
   }
 
   /// A writable pool for seeding — deliberately NOT the read-only driver.
