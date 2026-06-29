@@ -52,6 +52,10 @@ thiserror = "2"
 # `toml` parses the file. No I/O here — just string → struct + validation.
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
+# Connection secrets: never in the TOML. `secrecy` wraps in-memory passwords so
+# they zeroize on drop and never land in a `Debug` log. The `keyring` backend
+# (OS keychain) lands behind the `SecretStore` port alongside it.
+secrecy = "0.10"
 # Async runtime. Only `rt-multi-thread` + `macros` (for `#[tokio::main]`) now;
 # `sync` (channels for the Effect loop) lands with the runtime phase.
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
