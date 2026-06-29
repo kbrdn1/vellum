@@ -1,10 +1,23 @@
 //! The database engine tag. Pure data — the `Driver` port reports it via
-//! `kind()`, and (later) the TUI keys backend-specific behaviour off it. One
-//! variant for Phase 0 (SQLite-only); extended as backends land (Postgres,
-//! MySQL, DuckDB, … — ARCHITECTURE §4).
+//! `kind()`, the `.vellum.toml` `backend = "…"` field deserialises into it,
+//! and (later) the TUI keys backend-specific behaviour off it. SQLite shipped
+//! in Phase 0; Postgres / MySQL are the Phase 1 sqlx drivers. The variant set
+//! is the closed list of *valid* backend names — an unknown name is a config
+//! error (ARCHITECTURE §4). A variant existing here does not imply its driver
+//! is wired yet.
+
+use serde::Deserialize;
 
 /// Which database engine a connection talks to.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// `Deserialize` maps the lowercase `.vellum.toml` token (`"postgres"`,
+/// `"mysql"`, `"sqlite"`) to the variant; serde rejects any other token with
+/// an "unknown variant" error, which the config parser surfaces as a
+/// `VellumError::Config`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Backend {
+  Postgres,
+  MySql,
   Sqlite,
 }

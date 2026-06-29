@@ -25,6 +25,12 @@ pub enum VellumError {
   /// can match on it before the concrete drivers exist.
   #[error("driver error: {0}")]
   Driver(String),
+
+  /// `.vellum.toml` parse or validation failure — malformed TOML, an unknown
+  /// backend, an unknown key, or a secret stored in clear (rejected). First
+  /// constructed by the config parser (Phase 1).
+  #[error("config error: {0}")]
+  Config(String),
 }
 
 pub type Result<T> = std::result::Result<T, VellumError>;
