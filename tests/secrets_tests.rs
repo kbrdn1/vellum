@@ -5,7 +5,8 @@
 //! real keychain in CI).
 
 use vellum::secrets::{
-  env_var_name, resolve, Credential, ExposeSecret, MemoryStore, SecretStore, SecretString,
+  env_var_name, resolve, resolve_with, Credential, ExposeSecret, MemoryStore, SecretStore,
+  SecretString,
 };
 
 #[test]
@@ -44,25 +45,28 @@ fn env_var_name_is_uppercased_with_separators_normalised() {
 #[test]
 fn resolve_prefers_the_env_dsn_over_the_store() {
   // A `VELLUM_DSN_<NAME>` override wins even when a password is stored — the
-  // CI / scripting path bypasses the keyring entirely.
+  // CI / scripting path bypasses the keyring. Driven through `resolve_with`
+  // with an injected env so the test never mutates the process environment.
   let store = MemoryStore::default();
   store
     .set("envwins", &SecretString::from("stored-pw".to_string()))
     .unwrap();
-  std::env::set_var("VELLUM_DSN_ENVWINS", "postgres://dsn-from-env");
 
-  let resolved = resolve("envwins", &store).unwrap().expect("env supplies a credential");
+  let env = |key: &str| (key == "VELLUM_DSN_ENVWINS").then(|| "postgres://dsn-from-env".to_string());
+  let resolved = resolve_with("envwins", &store, env)
+    .unwrap()
+    .expect("env supplies a credential");
   match resolved {
     Credential::Dsn(dsn) => assert_eq!(dsn.expose_secret(), "postgres://dsn-from-env"),
     other => panic!("expected a DSN from env, got {other:?}"),
   }
-
-  std::env::remove_var("VELLUM_DSN_ENVWINS");
 }
 
 #[test]
 fn resolve_falls_back_to_the_stored_password() {
-  // No env override → the stored password, as a `Password` credential.
+  // No env override → the stored password, as a `Password` credential. Uses
+  // the real `resolve`: with no override set, the lookup misses and the store
+  // wins (read-only env access — nothing here writes the environment).
   let store = MemoryStore::default();
   store
     .set("fallback", &SecretString::from("stored-pw".to_string()))

@@ -97,7 +97,20 @@ pub fn env_var_name(connection: &str) -> String {
 /// Resolve a connection's credential: a `VELLUM_DSN_<NAME>` override wins,
 /// otherwise the password held by `store`. `None` if neither is configured.
 pub fn resolve(connection: &str, store: &dyn SecretStore) -> Result<Option<Credential>> {
-  if let Ok(dsn) = std::env::var(env_var_name(connection)) {
+  resolve_with(connection, store, |key| std::env::var(key).ok())
+}
+
+/// [`resolve`] with the environment lookup injected. This is the seam tests
+/// drive: they pin the precedence deterministically without mutating the
+/// process environment (a write that races parallel readers — the same
+/// global-state hazard that pushed the keyring impl behind this port). `env`
+/// maps an env var name to its value, mirroring `std::env::var(..).ok()`.
+pub fn resolve_with(
+  connection: &str,
+  store: &dyn SecretStore,
+  env: impl Fn(&str) -> Option<String>,
+) -> Result<Option<Credential>> {
+  if let Some(dsn) = env(&env_var_name(connection)) {
     return Ok(Some(Credential::Dsn(SecretString::from(dsn))));
   }
   Ok(store.get(connection)?.map(Credential::Password))
