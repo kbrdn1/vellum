@@ -61,11 +61,22 @@ secrecy = "0.10"
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 # Async methods on the `Driver` port (dyn-ready for the Phase 1 ConnPool).
 async-trait = "0.1"
-# DB driver — SQLite only for Phase 0 (bundled libsqlite3: no system dep, no
-# TLS for a local file). Postgres / MySQL land in Phase 1 behind the same
-# `Driver` port. `default-features = false` skips the unused macros / migrate /
-# any features.
-sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite"] }
+# DB drivers behind the same `Driver` port: SQLite (bundled libsqlite3 — no
+# system dep) shipped in Phase 0; Postgres lands in Phase 1 (#10). `tls-rustls`
+# gives the PG driver a TLS backend so `sslmode` from the DSN is honoured (no
+# OpenSSL system dep). `uuid` / `json` / `time` widen the typed decode so the
+# PG read path maps those into the existing `Value` variants; the long tail
+# (numeric, arrays, enums) hits a conservative non-data marker (#76).
+# `default-features = false` skips the unused macros / migrate features.
+sqlx = { version = "0.8", default-features = false, features = [
+  "runtime-tokio",
+  "tls-rustls",
+  "sqlite",
+  "postgres",
+  "uuid",
+  "json",
+  "time",
+] }
 # The single SQL-understanding layer (ARCHITECTURE §stack). Used here to keep
 # the read path read-only: parse the input and require exactly one
 # `SELECT`-style statement before it reaches the database.
@@ -79,6 +90,15 @@ sqlparser = { version = "0.62", default-features = false, features = ["std"] }
 # render through ratatui (crossterm is its default backend). ratatui 0.30 sets
 # the crate's 1.88 MSRV (see `rust-version` above).
 ratatui = "0.30"
+
+[features]
+# Opt-in gate for integration tests that need a real database *server*
+# (Postgres now; MySQL with #11). Off by default so `cargo test` runs the
+# in-memory SQLite suite with no Docker. Enable with `cargo test --features
+# it-db` against a containerised server — the DSN comes from `VELLUM_IT_PG_DSN`
+# (default `postgres://postgres:postgres@localhost:5432/postgres`). See
+# `.bdd-test/` and the `it-db` CI job.
+it-db = []
 
 [dev-dependencies]
 assert_cmd = "2"

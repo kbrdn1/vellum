@@ -499,3 +499,144 @@ async fn sqlite_introspection_keeps_an_explicit_empty_named_target_column() {
   // would resolve to the parent PK and, with no PK here, come back empty).
   assert_eq!(fk.references.columns, [""]);
 }
+
+/// PostgreSQL integration tests — behind the `it-db` feature so the default
+/// `cargo test` stays on in-memory SQLite (no Docker). Run with:
+///
+/// ```bash
+/// VELLUM_IT_PG_DSN=postgres://postgres:postgres@localhost:5432/postgres \
+///   cargo test --features it-db --test driver_tests postgres_it
+/// ```
+///
+/// Each test seeds through a **separate writable** `sqlx` pool (the read-only
+/// `PostgresDriver` would refuse the DDL/INSERT) and uses a uniquely-named
+/// table, so the suite is safe to run concurrently against one server.
+#[cfg(feature = "it-db")]
+mod postgres_it {
+  use sqlx::postgres::PgPoolOptions;
+  use sqlx::{Executor as _, PgPool};
+  use vellum::driver::{Driver, PostgresDriver};
+  use vellum::model::{Backend, Value};
+
+  /// The PG DSN — from `VELLUM_IT_PG_DSN`, or a standard local default so the
+  /// CI `it-db` job (service on `localhost:5432`) needs no extra env.
+  fn dsn() -> String {
+    std::env::var("VELLUM_IT_PG_DSN")
+      .unwrap_or_else(|_| "postgres://postgres:postgres@localhost:5432/postgres".to_string())
+  }
+
+  /// A writable pool for seeding — deliberately NOT the read-only driver.
+  async fn seed_pool() -> PgPool {
+    PgPoolOptions::new()
+      .max_connections(1)
+      .connect(&dsn())
+      .await
+      .expect("connect a writable seed pool")
+  }
+
+  #[tokio::test]
+  async fn pg_connect_then_select_maps_types() {
+    let pool = seed_pool().await;
+    pool.execute("drop table if exists it_types").await.expect("drop");
+    pool
+      .execute(
+        "create table it_types (
+           b bool, i2 int2, i4 int4, i8 int8, f4 float4, f8 float8,
+           t text, by bytea, j jsonb, u uuid, ts timestamptz, arr int4[]
+         )",
+      )
+      .await
+      .expect("create table");
+    pool
+      .execute(
+        "insert into it_types values (
+           true, 1, 2, 3, 1.5, 2.5,
+           'hello', '\\xdeadbeef', '{\"k\":1}',
+           '00000000-0000-0000-0000-000000000001',
+           '2024-01-02 03:04:05+00', '{10,20,30}'
+         )",
+      )
+      .await
+      .expect("seed row");
+
+    let driver = PostgresDriver::connect(&dsn()).await.expect("connect read-only");
+    assert_eq!(driver.kind(), Backend::Postgres);
+
+    let result = driver.query("select * from it_types").await.expect("query it_types");
+    assert_eq!(result.rows.len(), 1);
+    let row = &result.rows[0];
+    // Native scalars decode faithfully.
+    assert_eq!(row[0], Value::Bool(true));
+    assert_eq!(row[1], Value::Int(1));
+    assert_eq!(row[2], Value::Int(2));
+    assert_eq!(row[3], Value::Int(3));
+    assert_eq!(row[4], Value::Float(1.5));
+    assert_eq!(row[5], Value::Float(2.5));
+    assert_eq!(row[6], Value::Text("hello".into()));
+    assert_eq!(row[7], Value::Bytes(vec![0xde, 0xad, 0xbe, 0xef]));
+    // json/jsonb → Json; uuid → Text; timestamptz → Timestamp (conservative,
+    // into the existing variants — formats asserted loosely).
+    assert!(
+      matches!(&row[8], Value::Json(s) if s.contains("\"k\"")),
+      "jsonb → Json, got {:?}",
+      row[8]
+    );
+    assert_eq!(row[9], Value::Text("00000000-0000-0000-0000-000000000001".into()));
+    assert!(
+      matches!(&row[10], Value::Timestamp(s) if s.contains("2024")),
+      "timestamptz → Timestamp, got {:?}",
+      row[10]
+    );
+    // int4[] is the conservative long tail (#76): an honest non-data marker,
+    // never a fake value.
+    assert!(
+      matches!(&row[11], Value::Text(s) if s.starts_with('<')),
+      "array → marker, got {:?}",
+      row[11]
+    );
+  }
+
+  #[tokio::test]
+  async fn pg_query_refuses_a_data_modifying_cte() {
+    // THE write-path guard for PG: a data-modifying CTE parses as a single
+    // top-level `SELECT` (the sqlparser guard waves it through) but it WRITES.
+    // The read-only session backstop (`default_transaction_read_only = on`)
+    // must refuse it, and nothing may be inserted.
+    let pool = seed_pool().await;
+    pool.execute("drop table if exists it_cte_guard").await.expect("drop");
+    pool
+      .execute("create table it_cte_guard (x int)")
+      .await
+      .expect("create table");
+
+    let driver = PostgresDriver::connect(&dsn()).await.expect("connect read-only");
+    let outcome = driver
+      .query("with t as (insert into it_cte_guard values (1) returning *) select * from t")
+      .await;
+    assert!(
+      outcome.is_err(),
+      "a data-modifying CTE must be refused on the read path"
+    );
+
+    let count: i64 = sqlx::query_scalar("select count(*) from it_cte_guard")
+      .fetch_one(&pool)
+      .await
+      .expect("count rows");
+    assert_eq!(count, 0, "the refused CTE must not have inserted a row");
+  }
+
+  #[tokio::test]
+  async fn pg_query_refuses_a_plain_write() {
+    // The shared parser guard, wired with the PG dialect, refuses a plain
+    // write before it reaches the server (the read-only session is a backstop).
+    let driver = PostgresDriver::connect(&dsn()).await.expect("connect read-only");
+    assert!(
+      driver.query("create table it_plain_ddl (x int)").await.is_err(),
+      "DDL must be refused on the read path"
+    );
+    assert!(
+      driver.query("delete from it_types").await.is_err(),
+      "a DELETE must be refused on the read path"
+    );
+  }
+}
