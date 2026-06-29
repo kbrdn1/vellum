@@ -15,6 +15,18 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Phase 1 — `.vellum.toml` connection manager (#8):** parse the config file
+  into a typed `Config` — `[connections.<name>]` (backend, host, port, user,
+  database, path, sslmode) plus a `[ui]` block (`page_size` default 200,
+  `theme` default "vellum"). The `backend` field resolves to the canonical
+  `Backend` tag, now extended with `Postgres` / `MySql` (a variant names a
+  *valid backend*, not a wired driver). The schema we freeze for 1.0 is
+  deliberately strict: `deny_unknown_fields` turns a typo'd key into a hard
+  error, and a plaintext `password` is **refused on presence** with a message
+  pointing at the system keyring / `VELLUM_DSN_*` (secrets never live in the
+  file — keyring + env resolution land in #9). Pure parse, no I/O;
+  `tests/config_tests.rs` pins multi-connection parsing, `[ui]` defaults, the
+  closed backend set, unknown-key rejection, and the password gate.
 - **Phase 0 — one-shot CLI + TUI launch (#7):** `vellum --db <FILE> "<SQL>"`
   connects the SQLite driver, runs the read-only query, and prints the rows to
   stdout as tab-separated values (header first) — exit `0` on success, exit `1`
