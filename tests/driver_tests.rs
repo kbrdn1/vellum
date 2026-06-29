@@ -201,3 +201,37 @@ async fn empty_select_still_reports_columns() {
   assert_eq!(result.columns[0].name, "n");
   assert_eq!(result.columns[1].name, "label");
 }
+
+#[tokio::test]
+async fn open_readonly_opens_a_file_by_literal_path() {
+  // `open_readonly` takes a path (not a `sqlite:` DSN), so a filename with URL
+  // metacharacters (`%`, `#`) opens the literal file rather than being parsed
+  // as a connection URI. Seed such a file, then read it back by path.
+  let dir = tempfile::tempdir().expect("create temp dir");
+  let path = dir.path().join("data%name#1.sqlite");
+  {
+    let setup = SqlitePool::connect_with(SqliteConnectOptions::new().filename(&path).create_if_missing(true))
+      .await
+      .expect("open writable connection for seeding");
+    setup
+      .execute("create table items (id integer, label text)")
+      .await
+      .expect("create table");
+    setup
+      .execute("insert into items (id, label) values (1, 'alpha')")
+      .await
+      .expect("seed rows");
+    setup.close().await;
+  }
+
+  let driver = SqliteDriver::open_readonly(&path)
+    .await
+    .expect("open read-only by literal path");
+  let result = driver
+    .query("select label from items")
+    .await
+    .expect("query the path-opened db");
+  assert_eq!(driver.kind(), Backend::Sqlite);
+  assert_eq!(result.rows.len(), 1);
+  assert_eq!(result.rows[0][0], Value::Text("alpha".to_string()));
+}
