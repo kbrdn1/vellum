@@ -412,3 +412,90 @@ async fn sqlite_introspection_includes_generated_columns() {
     "the generated column `area` must be listed, got {names:?}"
   );
 }
+
+#[tokio::test]
+async fn sqlite_introspection_excludes_hidden_virtual_table_columns() {
+  // `pragma_table_xinfo` lists a virtual table's internal columns with
+  // `hidden = 1` — an fts5 table exposes a column named after the table and a
+  // `rank` column, both hidden. Those must be excluded; only the declared
+  // columns (`hidden = 0`) and generated ones (`hidden = 2/3`) belong in the
+  // catalog. This pins the `WHERE hidden != 1` filter against regression.
+  let file = NamedTempFile::new().expect("create temp db file");
+  let dsn = format!("sqlite:{}", file.path().display());
+  let setup = SqlitePool::connect_with(
+    SqliteConnectOptions::from_str(&dsn)
+      .expect("parse dsn")
+      .create_if_missing(true),
+  )
+  .await
+  .expect("open writable connection for seeding");
+  setup
+    .execute("create virtual table docs using fts5(title, body)")
+    .await
+    .expect("seed an fts5 virtual table");
+  setup.close().await;
+  let driver = SqliteDriver::connect(&dsn).await.expect("connect read-only");
+
+  let catalog = driver.introspect().await.expect("introspect the schema");
+  let docs = catalog
+    .database("main")
+    .unwrap()
+    .schema("main")
+    .unwrap()
+    .relation("docs")
+    .expect("relation `docs`");
+  let names: Vec<&str> = docs.columns.iter().map(|c| c.name.as_str()).collect();
+  // The two declared columns survive; the hidden `docs` / `rank` internals must
+  // not leak into the catalog.
+  assert_eq!(
+    names,
+    ["title", "body"],
+    "only the declared fts5 columns are listed (hidden internals excluded), got {names:?}"
+  );
+}
+
+#[tokio::test]
+async fn sqlite_introspection_keeps_an_explicit_empty_named_target_column() {
+  // A foreign key can name a target column that is the empty string
+  // (`references parent("")`). `pragma_foreign_key_list` reports `to = ''`
+  // (text) — distinct from the NULL of an *implicit* target. The empty name
+  // must stay an explicit reference: never folded to the parent's primary key
+  // the way an implicit (NULL) target is. This pins the `to: Option<String>`
+  // read (only NULL is implicit) against regression.
+  let file = NamedTempFile::new().expect("create temp db file");
+  let dsn = format!("sqlite:{}", file.path().display());
+  let setup = SqlitePool::connect_with(
+    SqliteConnectOptions::from_str(&dsn)
+      .expect("parse dsn")
+      .create_if_missing(true),
+  )
+  .await
+  .expect("open writable connection for seeding");
+  for stmt in [
+    // `parent` has NO primary key — only a unique column named "". If the empty
+    // target were mistaken for NULL (implicit), it would resolve to the parent
+    // PK and come back empty; staying explicit keeps the `""` column name.
+    "create table parent(\"\" integer unique)",
+    "create table child(x integer references parent(\"\"))",
+  ] {
+    setup.execute(stmt).await.expect("seed schema");
+  }
+  setup.close().await;
+  let driver = SqliteDriver::connect(&dsn).await.expect("connect read-only");
+
+  let catalog = driver.introspect().await.expect("introspect the schema");
+  let child = catalog
+    .database("main")
+    .unwrap()
+    .schema("main")
+    .unwrap()
+    .relation("child")
+    .expect("relation `child`");
+  assert_eq!(child.foreign_keys.len(), 1);
+  let fk = &child.foreign_keys[0];
+  assert_eq!(fk.columns, ["x"]);
+  assert_eq!(fk.references.relation, "parent");
+  // Explicit empty-string target — NOT the implicit-target fallback (which
+  // would resolve to the parent PK and, with no PK here, come back empty).
+  assert_eq!(fk.references.columns, [""]);
+}
