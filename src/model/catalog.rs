@@ -10,6 +10,11 @@
 //! Ordering is whatever the populator inserts — `Vec`s preserve it (columns
 //! must stay in ordinal order). Navigation is by name via the `*(name)`
 //! helpers; a name-sorted view, if ever needed, is an accessor to add then.
+//!
+//! The `*(name)` helpers return the **first** child with that name. Names are
+//! expected to be unique within their parent (a schema's relations, a
+//! relation's columns, …) — the populator (#13) is responsible for emitting a
+//! well-formed tree; the model does not dedupe.
 
 /// A connection's schema tree — one or more databases.
 #[derive(Debug, Clone, PartialEq)]
@@ -53,6 +58,11 @@ pub struct Relation {
 pub struct Column {
   pub name: String,
   pub data_type: String,
+  /// Whether the column admits `NULL`. When a backend cannot determine this
+  /// (e.g. some view columns), the populator sets it **conservatively to
+  /// `true`** — assume nullable when unsure, the safe default for the write
+  /// guard. A finer `Option<bool>`/enum is a free change later if a consumer
+  /// needs to distinguish "unknown".
   pub nullable: bool,
   pub primary_key: bool,
 }
