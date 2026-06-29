@@ -132,12 +132,17 @@ impl SqliteDriver {
       let id: i64 = row.try_get("id").map_err(driver_err)?;
       let referenced: String = row.try_get("table").map_err(driver_err)?;
       let from: String = row.try_get("from").map_err(driver_err)?;
-      let to: String = row.try_get("to").map_err(driver_err)?;
+      // `to` is NULL (decoded as empty) when the FK omits its target columns —
+      // an implicit reference to the parent's primary key, filled in below.
+      let to: Option<String> = row
+        .try_get::<Option<String>, _>("to")
+        .map_err(driver_err)?
+        .filter(|name| !name.is_empty());
 
       if current_id == Some(id) {
         if let Some(fk) = foreign_keys.last_mut() {
           fk.columns.push(from);
-          fk.references.columns.push(to);
+          fk.references.columns.extend(to);
         }
       } else {
         current_id = Some(id);
@@ -147,12 +152,36 @@ impl SqliteDriver {
           references: catalog::Reference {
             schema: None,
             relation: referenced,
-            columns: vec![to],
+            columns: to.into_iter().collect(),
           },
         });
       }
     }
+
+    // An implicit target (every `to` was NULL) references the parent's primary
+    // key, in key order.
+    for fk in &mut foreign_keys {
+      if fk.references.columns.is_empty() {
+        let parent = fk.references.relation.clone();
+        fk.references.columns = self.primary_key_columns(&parent).await?;
+      }
+    }
     Ok(foreign_keys)
+  }
+
+  /// The primary-key column names of `relation`, ordered by their position in
+  /// the key (`pragma_table_info.pk`).
+  async fn primary_key_columns(&self, relation: &str) -> Result<Vec<String>> {
+    let rows = sqlx::query("SELECT name FROM pragma_table_info(?1) WHERE pk > 0 ORDER BY pk")
+      .bind(relation)
+      .fetch_all(&self.pool)
+      .await
+      .map_err(driver_err)?;
+    let mut names = Vec::with_capacity(rows.len());
+    for row in &rows {
+      names.push(row.try_get::<String, _>("name").map_err(driver_err)?);
+    }
+    Ok(names)
   }
 }
 
