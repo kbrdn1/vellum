@@ -80,14 +80,25 @@ pub enum Credential {
 /// full DSN: `VELLUM_DSN_<NAME>`, the name uppercased with every
 /// non-alphanumeric character folded to `_`. This is part of the frozen 1.0
 /// contract.
-pub fn env_var_name(_connection: &str) -> String {
-  // stub — the transform is pinned by the red test first
-  String::new()
+pub fn env_var_name(connection: &str) -> String {
+  let suffix: String = connection
+    .chars()
+    .map(|c| {
+      if c.is_ascii_alphanumeric() {
+        c.to_ascii_uppercase()
+      } else {
+        '_'
+      }
+    })
+    .collect();
+  format!("VELLUM_DSN_{suffix}")
 }
 
 /// Resolve a connection's credential: a `VELLUM_DSN_<NAME>` override wins,
 /// otherwise the password held by `store`. `None` if neither is configured.
-pub fn resolve(_connection: &str, _store: &dyn SecretStore) -> Result<Option<Credential>> {
-  // stub
-  Ok(None)
+pub fn resolve(connection: &str, store: &dyn SecretStore) -> Result<Option<Credential>> {
+  if let Ok(dsn) = std::env::var(env_var_name(connection)) {
+    return Ok(Some(Credential::Dsn(SecretString::from(dsn))));
+  }
+  Ok(store.get(connection)?.map(Credential::Password))
 }
