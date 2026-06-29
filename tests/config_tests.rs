@@ -84,3 +84,47 @@ fn rejects_an_unknown_backend() {
     "expected VellumError::Config, got {err:?}"
   );
 }
+
+#[test]
+fn rejects_unknown_keys() {
+  // The schema is frozen and hand-edited — a typo'd key (here `hostname`
+  // instead of `host`) must be loud, not silently dropped.
+  let toml = r#"
+    [connections.typo]
+    backend  = "postgres"
+    hostname = "localhost"
+  "#;
+
+  let err = Config::from_toml_str(toml).expect_err("unknown key must error");
+  assert!(
+    matches!(err, VellumError::Config(_)),
+    "expected VellumError::Config, got {err:?}"
+  );
+}
+
+#[test]
+fn rejects_a_plaintext_password() {
+  // A secret never lives in the file. Reject it on presence with a message
+  // that points at the real channels (keyring / VELLUM_DSN), rather than a
+  // generic "unknown field".
+  let toml = r#"
+    [connections.leaky]
+    backend  = "postgres"
+    user     = "kbrdn1"
+    password = "hunter2"
+  "#;
+
+  let err = Config::from_toml_str(toml).expect_err("a plaintext password must be refused");
+  let VellumError::Config(message) = err else {
+    panic!("expected VellumError::Config, got {err:?}");
+  };
+  let lower = message.to_lowercase();
+  assert!(
+    lower.contains("password"),
+    "message should name the offending key: {message}"
+  );
+  assert!(
+    lower.contains("keyring"),
+    "message should point at the keyring: {message}"
+  );
+}
