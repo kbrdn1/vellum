@@ -51,8 +51,11 @@ impl SqliteDriver {
   /// the `Driver` port when the trait freezes with the second impl (#11).
   pub async fn introspect(&self) -> Result<catalog::Catalog> {
     let relation_rows = sqlx::query(
+      // `GLOB 'sqlite_*'` matches the *literal* `sqlite_` prefix — unlike
+      // `LIKE 'sqlite_%'`, whose `_` is a wildcard that would also drop a user
+      // table like `sqlitexdata`.
       "SELECT name, type FROM sqlite_master \
-       WHERE type IN ('table', 'view') AND name NOT LIKE 'sqlite_%' \
+       WHERE type IN ('table', 'view') AND name NOT GLOB 'sqlite_*' \
        ORDER BY name",
     )
     .fetch_all(&self.pool)
