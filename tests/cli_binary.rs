@@ -76,19 +76,47 @@ fn db_without_query_is_a_usage_error() {
 }
 
 #[test]
-fn one_shot_opens_db_path_with_url_special_chars() {
-  // A filename with `?` / `%` must open the file the user named, not be parsed
-  // as a `sqlite:` DSN (which would split on `?` and percent-decode). Pins the
-  // DSN-encoding in `cli::sqlite_dsn`.
-  let dir = tempfile::tempdir().unwrap();
-  let path = dir.path().join("we?rd%name.sqlite");
+fn interactive_without_db_is_a_usage_error() {
+  // `-i` with no database/query asks to open something that isn't there; it is
+  // a usage error, not a silent banner with exit 0.
+  let mut cmd = Command::cargo_bin("vellum").unwrap();
+  cmd.arg("--interactive");
+  cmd.assert().failure();
+}
+
+/// Seed a one-row `items` table at `path` for the DSN-encoding tests.
+fn seed_items(path: &std::path::Path) {
   common::seed_sql(
-    &path,
+    path,
     &[
       "create table items (id integer, label text)",
       "insert into items (id, label) values (1, 'alpha')",
     ],
   );
+}
+
+#[test]
+fn one_shot_opens_db_path_with_percent_and_hash() {
+  // `%` (percent-decode) and `#` (fragment) are URL-structural for sqlx but
+  // valid in filenames on every platform. The file the user named must open,
+  // not a DSN-parsed variant. Pins `cli::sqlite_dsn`'s encoding cross-platform.
+  let dir = tempfile::tempdir().unwrap();
+  let path = dir.path().join("weird%name#1.sqlite");
+  seed_items(&path);
+  let mut cmd = Command::cargo_bin("vellum").unwrap();
+  cmd.arg("--db").arg(&path).arg("select label from items order by id");
+  cmd.assert().success().stdout(predicate::str::contains("alpha"));
+}
+
+// `?` is a valid filename byte on Unix but forbidden on Windows, so the
+// query-separator case (the worst DSN mis-parse) is exercised only where such a
+// file can exist.
+#[cfg(unix)]
+#[test]
+fn one_shot_opens_db_path_with_question_mark() {
+  let dir = tempfile::tempdir().unwrap();
+  let path = dir.path().join("we?rd.sqlite");
+  seed_items(&path);
   let mut cmd = Command::cargo_bin("vellum").unwrap();
   cmd.arg("--db").arg(&path).arg("select label from items order by id");
   cmd.assert().success().stdout(predicate::str::contains("alpha"));

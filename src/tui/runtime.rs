@@ -16,7 +16,15 @@ use crate::tui::view;
 /// the terminal on the way out — including on error.
 pub fn run(result: QueryResult) -> Result<()> {
   let mut app = App::new(result);
-  let mut terminal = ratatui::try_init()?;
+  // If init fails *after* enabling raw mode / the alternate screen, restore
+  // (best-effort) before propagating so the user's terminal isn't left broken.
+  let mut terminal = match ratatui::try_init() {
+    Ok(terminal) => terminal,
+    Err(e) => {
+      let _ = ratatui::try_restore();
+      return Err(e.into());
+    }
+  };
   let outcome = event_loop(&mut terminal, &mut app);
   ratatui::try_restore()?;
   outcome

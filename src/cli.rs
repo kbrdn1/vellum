@@ -5,8 +5,6 @@
 //! instead (vim navigation, `q` to quit). `run` is `async` because the driver
 //! layer it dispatches to is async on the tokio runtime bootstrapped in `main`.
 
-use std::path::Path;
-
 use clap::Parser;
 
 use crate::driver::{Driver, SqliteDriver};
@@ -47,8 +45,9 @@ pub async fn run(cli: Cli) -> Result<()> {
   let interactive = cli.interactive;
   match (cli.db, cli.sql) {
     (Some(db), Some(sql)) => {
-      let dsn = sqlite_dsn(&db);
-      let driver = SqliteDriver::connect(&dsn).await?;
+      // Open by path (not a DSN string) so the literal file named is queried —
+      // see `SqliteDriver::open_readonly`.
+      let driver = SqliteDriver::open_readonly(&db).await?;
       let result = driver.query(&sql).await?;
       if interactive {
         tui::run(result)
@@ -60,6 +59,11 @@ pub async fn run(cli: Cli) -> Result<()> {
       "a SQL query is required with --db, e.g. `vellum --db data.sqlite \"select * from t\"`".to_string(),
     )),
     (None, Some(_)) => Err(VellumError::Arg("--db <FILE> is required to run a query".to_string())),
+    // `--interactive` without a database/query is a usage error, not a silent
+    // banner: the user asked to open something that isn't there.
+    (None, None) if interactive => Err(VellumError::Arg(
+      "--interactive needs --db <FILE> and a query, e.g. `vellum --db data.sqlite \"select * from t\" -i`".to_string(),
+    )),
     (None, None) => {
       println!(
         "vellum — pass `--db <FILE> \"<SQL>\"` to run a query (add `-i` for the TUI), \
@@ -68,20 +72,6 @@ or `--help` for usage."
       Ok(())
     }
   }
-}
-
-/// Build the SQLite DSN the driver expects from a filesystem path. sqlx parses
-/// the DSN as a URL — `?` starts query parameters and `%xx` is percent-decoded —
-/// so the structural characters are percent-encoded here, making the filename
-/// round-trip to exactly `path` instead of being truncated or redirected to
-/// another file. (`%` first, so the escapes introduced below aren't re-encoded.)
-fn sqlite_dsn(path: &Path) -> String {
-  let encoded = path
-    .to_string_lossy()
-    .replace('%', "%25")
-    .replace('?', "%3F")
-    .replace('#', "%23");
-  format!("sqlite:{encoded}")
 }
 
 /// Print a query result to stdout as tab-separated rows (header first). Tabs,

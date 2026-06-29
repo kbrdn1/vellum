@@ -2,6 +2,7 @@
 //! libsqlite3, in-process). Maps SQLite's five storage classes (NULL /
 //! INTEGER / REAL / TEXT / BLOB) onto the normalised `Value`.
 
+use std::path::Path;
 use std::str::FromStr;
 
 use async_trait::async_trait;
@@ -21,6 +22,21 @@ use crate::model::{Backend, Column, QueryResult, Row, TypeKind, Value};
 /// A connection to a SQLite database, backed by a sqlx pool.
 pub struct SqliteDriver {
   pool: SqlitePool,
+}
+
+impl SqliteDriver {
+  /// Open a **read-only** connection to a SQLite database file by path. Unlike
+  /// [`Driver::connect`] — which parses a `sqlite:` DSN as a URI — the path is
+  /// handed to sqlx verbatim via `.filename`, so a name with URL
+  /// metacharacters (`?`, `%`, `#`) or one that looks like a DSN (`:memory:`,
+  /// `file:…`) opens the literal file named instead of being reinterpreted as a
+  /// connection URI. Read-only is enforced exactly as in `connect`
+  /// (`SQLITE_OPEN_READONLY`, unbypassable from SQL).
+  pub async fn open_readonly(path: &Path) -> Result<Self> {
+    let options = SqliteConnectOptions::new().filename(path).read_only(true);
+    let pool = SqlitePool::connect_with(options).await.map_err(driver_err)?;
+    Ok(Self { pool })
+  }
 }
 
 #[async_trait]
