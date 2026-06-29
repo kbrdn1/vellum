@@ -43,12 +43,116 @@ impl SqliteDriver {
 
   /// Introspect the connected database into the pure [`catalog::Catalog`].
   ///
-  /// SQLite's single default schema maps to one `Database` / `Schema`, both
-  /// named `main`. Inherent for now; it joins the `Driver` port when the trait
-  /// freezes with the second impl (#11).
+  /// Reads `sqlite_master` (tables + views, `sqlite_*` internal objects
+  /// excluded) and the `pragma_*` table-valued functions (columns, PKs, FKs)
+  /// directly on the pool — `PRAGMA` is read-only by nature and wouldn't pass
+  /// the SELECT-only read guard anyway. SQLite's single default schema maps to
+  /// one `Database` / `Schema`, both named `main`. Inherent for now; it joins
+  /// the `Driver` port when the trait freezes with the second impl (#11).
   pub async fn introspect(&self) -> Result<catalog::Catalog> {
-    // stub — introspection is pinned by the red test first
-    Ok(catalog::Catalog { databases: Vec::new() })
+    let relation_rows = sqlx::query(
+      "SELECT name, type FROM sqlite_master \
+       WHERE type IN ('table', 'view') AND name NOT LIKE 'sqlite_%' \
+       ORDER BY name",
+    )
+    .fetch_all(&self.pool)
+    .await
+    .map_err(driver_err)?;
+
+    let mut relations = Vec::with_capacity(relation_rows.len());
+    for row in &relation_rows {
+      let name: String = row.try_get("name").map_err(driver_err)?;
+      let type_name: String = row.try_get("type").map_err(driver_err)?;
+      let kind = if type_name == "view" {
+        catalog::RelationKind::View
+      } else {
+        catalog::RelationKind::Table
+      };
+      let columns = self.introspect_columns(&name).await?;
+      let foreign_keys = self.introspect_foreign_keys(&name).await?;
+      relations.push(catalog::Relation {
+        name,
+        kind,
+        columns,
+        foreign_keys,
+      });
+    }
+
+    Ok(catalog::Catalog {
+      databases: vec![catalog::Database {
+        name: "main".to_string(),
+        schemas: vec![catalog::Schema {
+          name: "main".to_string(),
+          relations,
+        }],
+      }],
+    })
+  }
+
+  /// Columns of `relation` from `pragma_table_info`, in ordinal (`cid`) order.
+  async fn introspect_columns(&self, relation: &str) -> Result<Vec<catalog::Column>> {
+    let rows = sqlx::query("SELECT name, type, \"notnull\", pk FROM pragma_table_info(?1) ORDER BY cid")
+      .bind(relation)
+      .fetch_all(&self.pool)
+      .await
+      .map_err(driver_err)?;
+
+    let mut columns = Vec::with_capacity(rows.len());
+    for row in &rows {
+      let name: String = row.try_get("name").map_err(driver_err)?;
+      let data_type: String = row.try_get("type").map_err(driver_err)?;
+      let notnull: i64 = row.try_get("notnull").map_err(driver_err)?;
+      let pk: i64 = row.try_get("pk").map_err(driver_err)?;
+      columns.push(catalog::Column {
+        name,
+        data_type,
+        // Faithful to SQLite: `nullable = (notnull == 0)` — *not* "pk implies
+        // not-null". `INTEGER PRIMARY KEY` reports `notnull = 0`, and a
+        // non-INTEGER SQLite `PRIMARY KEY` genuinely admits NULL.
+        nullable: notnull == 0,
+        primary_key: pk > 0,
+      });
+    }
+    Ok(columns)
+  }
+
+  /// Foreign keys of `relation` from `pragma_foreign_key_list`. A multi-column
+  /// key spans several rows sharing an `id` (ordered by `seq`); they are folded
+  /// into one [`catalog::ForeignKey`].
+  async fn introspect_foreign_keys(&self, relation: &str) -> Result<Vec<catalog::ForeignKey>> {
+    let rows = sqlx::query("SELECT id, \"table\", \"from\", \"to\" FROM pragma_foreign_key_list(?1) ORDER BY id, seq")
+      .bind(relation)
+      .fetch_all(&self.pool)
+      .await
+      .map_err(driver_err)?;
+
+    let mut foreign_keys: Vec<catalog::ForeignKey> = Vec::new();
+    let mut current_id: Option<i64> = None;
+    for row in &rows {
+      let id: i64 = row.try_get("id").map_err(driver_err)?;
+      let referenced: String = row.try_get("table").map_err(driver_err)?;
+      let from: String = row.try_get("from").map_err(driver_err)?;
+      let to: String = row.try_get("to").map_err(driver_err)?;
+
+      if current_id == Some(id) {
+        if let Some(fk) = foreign_keys.last_mut() {
+          fk.columns.push(from);
+          fk.references.columns.push(to);
+        }
+      } else {
+        current_id = Some(id);
+        foreign_keys.push(catalog::ForeignKey {
+          name: None,
+          columns: vec![from],
+          references: catalog::Reference {
+            schema: None,
+            relation: referenced,
+            columns: vec![to],
+          },
+        });
+      }
+    }
+    Ok(foreign_keys)
   }
 }
 
