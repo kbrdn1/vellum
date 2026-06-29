@@ -11,4 +11,5 @@ pub mod config;
 pub mod driver;
 pub mod error;
 pub mod model;
+pub mod secrets;
 pub mod tui;

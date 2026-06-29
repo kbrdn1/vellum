@@ -31,6 +31,12 @@ pub enum VellumError {
   /// constructed by the config parser (Phase 1).
   #[error("config error: {0}")]
   Config(String),
+
+  /// Secret store failure — reading, writing, or deleting a connection
+  /// password in the OS keyring. The message never contains the secret. First
+  /// constructed by the secrets module (Phase 1).
+  #[error("secret store error: {0}")]
+  Secret(String),
 }
 
 pub type Result<T> = std::result::Result<T, VellumError>;
