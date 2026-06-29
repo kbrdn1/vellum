@@ -15,6 +15,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Phase 1 — schema introspection model (#12):** a pure `Catalog → Database →
+  Schema → Relation(table|view) → Column` tree plus `ForeignKey` — zero I/O,
+  the shape `Driver::introspect()` returns and the sidebar / autocomplete / ERD
+  read from. Navigation is by name at each level (`database` / `schema` /
+  `relation` / `column`), insertion order is preserved (deterministic for
+  diffs/tests), and `Database::resolve` follows a foreign key (same- or
+  cross-schema) to its target relation. All four levels are kept even where an
+  engine collapses them; the per-engine populator (#13) maps each backend onto
+  the tree. Only `Catalog` is re-exported flat; nested types stay under
+  `model::catalog::` (a `catalog::Column` would clash with `result::Column`).
 - **Phase 1 — connection secrets core (#9):** secrets never live in
   `.vellum.toml`. A `SecretStore` port (set / get / delete a password by
   connection name) with an in-memory `MemoryStore` impl, and a `resolve` rule
