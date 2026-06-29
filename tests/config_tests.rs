@@ -175,3 +175,24 @@ fn parsed_connection_carries_no_password_surface() {
     "public Connection must carry no password surface: {rendered}"
   );
 }
+
+#[test]
+fn rejects_connection_names_that_collide_under_the_env_override() {
+  // `local-pg` and `local_pg` both normalise to `VELLUM_DSN_LOCAL_PG` (#9), so
+  // one connection's env override would silently apply to the other — refused
+  // on a frozen security contract, before it can mis-route a credential.
+  let toml = r#"
+    [connections.local-pg]
+    backend = "postgres"
+
+    [connections.local_pg]
+    backend = "postgres"
+  "#;
+
+  let err =
+    Config::from_toml_str(toml).expect_err("colliding env-override names must be rejected");
+  assert!(
+    matches!(err, VellumError::Config(_)),
+    "expected VellumError::Config, got {err:?}"
+  );
+}
