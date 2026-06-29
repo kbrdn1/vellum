@@ -1,13 +1,14 @@
 //! Connection secrets — never in `.vellum.toml`.
 //!
-//! A connection's password lives in the OS keyring (or is supplied as a full
+//! A connection's password lives in a secret store (or is supplied as a full
 //! DSN via `VELLUM_DSN_<NAME>` for CI / scripting); `.vellum.toml` only ever
 //! names the connection. This module owns that contract:
 //!
 //! - [`SecretStore`] is the port — set / get / delete a password by connection
-//!   name. [`KeyringStore`] is the OS-backed impl; [`MemoryStore`] is a
-//!   process-local impl (handy for `VELLUM_DSN`-only runs and for tests,
-//!   without the keyring's process-global state).
+//!   name. [`MemoryStore`] is the process-local impl backing `VELLUM_DSN`-only
+//!   runs and the tests (no global state, no real keychain in CI). The OS
+//!   keyring backend and the `vellum connect` command that populates it land
+//!   in a follow-up, behind this same port.
 //! - [`resolve`] is the precedence rule a driver consumes: a `VELLUM_DSN_<NAME>`
 //!   environment override wins, otherwise the stored password.
 //!
@@ -22,7 +23,8 @@ pub use secrecy::{ExposeSecret, SecretString};
 use crate::error::Result;
 
 /// Store / fetch / delete a connection's password. The key is the connection
-/// name; implementations namespace it (the keyring uses `vellum:<name>`).
+/// name; implementations namespace it (the keyring backend will key it as
+/// `vellum:<name>`).
 pub trait SecretStore {
   /// Store (or replace) the password for `connection`.
   fn set(&self, connection: &str, secret: &SecretString) -> Result<()>;

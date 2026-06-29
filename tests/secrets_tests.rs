@@ -5,8 +5,7 @@
 //! real keychain in CI).
 
 use vellum::secrets::{
-  env_var_name, resolve, resolve_with, Credential, ExposeSecret, MemoryStore, SecretStore,
-  SecretString,
+  env_var_name, resolve, resolve_with, Credential, ExposeSecret, MemoryStore, SecretStore, SecretString,
 };
 
 #[test]
@@ -17,9 +16,7 @@ fn memory_store_round_trips_set_get_delete() {
     "an unknown connection has no stored secret"
   );
 
-  store
-    .set("conn-a", &SecretString::from("s3cr3t".to_string()))
-    .unwrap();
+  store.set("conn-a", &SecretString::from("s3cr3t".to_string())).unwrap();
   let got = store
     .get("conn-a")
     .unwrap()
@@ -86,4 +83,25 @@ fn resolve_returns_none_when_nothing_is_configured() {
   // No env, no stored password → no credential.
   let store = MemoryStore::default();
   assert!(resolve("absent", &store).unwrap().is_none());
+}
+
+#[test]
+fn secrets_are_redacted_in_debug_output() {
+  // Security guard for the whole point of the module: a secret never lands in
+  // a log. Pins that wrapping it in `SecretString` (not a bare `String`) keeps
+  // it out of `Debug` — raw, and inside a resolved `Credential`. Swap either
+  // for a plain string and this fails.
+  let secret = SecretString::from("topsecret-value".to_string());
+  assert!(
+    !format!("{secret:?}").contains("topsecret-value"),
+    "a SecretString must redact its value in Debug"
+  );
+
+  let store = MemoryStore::default();
+  store.set("c", &secret).unwrap();
+  let credential = resolve("c", &store).unwrap().expect("the store supplies a credential");
+  assert!(
+    !format!("{credential:?}").contains("topsecret-value"),
+    "a Credential must not leak its secret in Debug: {credential:?}"
+  );
 }
