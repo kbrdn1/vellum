@@ -16,6 +16,7 @@ use crate::model::Backend;
 
 /// A parsed `.vellum.toml`: the named connections plus the `[ui]` block.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Config {
   /// `[connections.<name>]` tables, keyed by name. A `BTreeMap` keeps the
   /// order deterministic (stable sidebar / listing, reproducible tests).
@@ -30,6 +31,7 @@ pub struct Config {
 /// a server connection fills host/port/user/database/sslmode, a SQLite one
 /// fills `path`. The password is intentionally absent: it never lives here.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Connection {
   /// The engine to talk to. An unknown token is a config error.
   pub backend: Backend,
@@ -46,11 +48,18 @@ pub struct Connection {
   pub path: Option<String>,
   #[serde(default)]
   pub sslmode: Option<String>,
+  /// Refused on presence. A secret never lives in the file — but it is
+  /// captured here (rather than left to `deny_unknown_fields`) so the parser
+  /// can reject it with a message that points at the real channels instead of
+  /// a generic "unknown field". Non-`pub`: never exposed to callers.
+  #[serde(default)]
+  password: Option<String>,
 }
 
 /// The `[ui]` block. Both fields default so a file may omit them (or the whole
 /// section).
 #[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Ui {
   /// Rows fetched per browse page (`LIMIT`).
   #[serde(default = "default_page_size")]
@@ -83,6 +92,20 @@ impl Config {
   /// Fails with [`VellumError::Config`] on malformed TOML, an unknown
   /// `backend`, an unknown key, or a plaintext secret.
   pub fn from_toml_str(input: &str) -> Result<Config> {
-    toml::from_str(input).map_err(|e| VellumError::Config(e.message().to_string()))
+    let config: Config = toml::from_str(input).map_err(|e| VellumError::Config(e.message().to_string()))?;
+
+    // A secret never lives in the file. Reject on presence, naming the
+    // connection and pointing at the real channels (#9 wires keyring +
+    // `VELLUM_DSN_<NAME>`).
+    for (name, conn) in &config.connections {
+      if conn.password.is_some() {
+        return Err(VellumError::Config(format!(
+          "connection `{name}`: `password` must not be stored in `.vellum.toml` — \
+           put the secret in the system keyring or a `VELLUM_DSN_*` environment variable"
+        )));
+      }
+    }
+
+    Ok(config)
   }
 }
