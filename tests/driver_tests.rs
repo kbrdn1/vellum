@@ -10,6 +10,7 @@ use sqlx::sqlite::{SqliteConnectOptions, SqlitePool};
 use sqlx::Executor as _;
 use tempfile::NamedTempFile;
 use vellum::driver::{Driver, SqliteDriver};
+use vellum::model::catalog::RelationKind;
 use vellum::model::{Backend, TypeKind, Value};
 
 /// A read-only `SqliteDriver` over a freshly-seeded tempfile database. The
@@ -234,4 +235,73 @@ async fn open_readonly_opens_a_file_by_literal_path() {
   assert_eq!(driver.kind(), Backend::Sqlite);
   assert_eq!(result.rows.len(), 1);
   assert_eq!(result.rows[0][0], Value::Text("alpha".to_string()));
+}
+
+/// A read-only `SqliteDriver` over a tempfile seeded with a small relational
+/// schema: `users` (PK, a NOT NULL and a nullable column), `orders` (a FK to
+/// `users`), and a view. The `NamedTempFile` guard must outlive the driver.
+async fn introspectable_driver() -> (SqliteDriver, NamedTempFile) {
+  let file = NamedTempFile::new().expect("create temp db file");
+  let dsn = format!("sqlite:{}", file.path().display());
+
+  let setup = SqlitePool::connect_with(
+    SqliteConnectOptions::from_str(&dsn)
+      .expect("parse dsn")
+      .create_if_missing(true),
+  )
+  .await
+  .expect("open writable connection for seeding");
+  for stmt in [
+    "create table users (id integer primary key, email text not null, bio text)",
+    "create table orders (id integer primary key, \
+       user_id integer not null references users(id), total real)",
+    "create view recent_orders as select id, user_id from orders",
+  ] {
+    setup.execute(stmt).await.expect("seed schema");
+  }
+  setup.close().await;
+
+  let driver = SqliteDriver::connect(&dsn).await.expect("connect read-only");
+  (driver, file)
+}
+
+#[tokio::test]
+async fn sqlite_introspection_returns_tables_columns_pk_fk() {
+  let (driver, _db) = introspectable_driver().await;
+  let catalog = driver.introspect().await.expect("introspect the schema");
+
+  let db = catalog.database("main").expect("database `main`");
+  let schema = db.schema("main").expect("schema `main`");
+
+  // Tables and the view, in `sqlite_master` name order.
+  let names: Vec<&str> = schema.relations.iter().map(|r| r.name.as_str()).collect();
+  assert_eq!(names, ["orders", "recent_orders", "users"]);
+
+  let users = schema.relation("users").expect("relation `users`");
+  assert_eq!(users.kind, RelationKind::Table);
+
+  let id = users.column("id").expect("column `id`");
+  assert!(id.primary_key, "id is the primary key");
+  assert_eq!(id.data_type.to_uppercase(), "INTEGER");
+
+  // `email` is NOT NULL; `bio` is nullable. (The PK's own nullability is a
+  // SQLite quirk — not asserted here.)
+  let email = users.column("email").expect("column `email`");
+  assert!(!email.nullable, "email is NOT NULL");
+  assert!(!email.primary_key);
+  let bio = users.column("bio").expect("column `bio`");
+  assert!(bio.nullable, "bio admits NULL");
+
+  let recent = schema.relation("recent_orders").expect("relation `recent_orders`");
+  assert_eq!(recent.kind, RelationKind::View);
+
+  // `orders.user_id` → `users.id`.
+  let orders = schema.relation("orders").expect("relation `orders`");
+  assert_eq!(orders.foreign_keys.len(), 1);
+  let fk = &orders.foreign_keys[0];
+  assert_eq!(fk.columns, ["user_id"]);
+  assert_eq!(fk.references.relation, "users");
+  assert_eq!(fk.references.columns, ["id"]);
+  let target = db.resolve(fk, "main").expect("the FK resolves");
+  assert_eq!(target.name, "users");
 }

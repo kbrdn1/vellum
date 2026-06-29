@@ -17,6 +17,9 @@ use sqlparser::parser::Parser;
 
 use crate::driver::Driver;
 use crate::error::{Result, VellumError};
+// `catalog` is module-qualified so its `Column` doesn't clash with the result
+// `Column` imported flat below.
+use crate::model::catalog;
 use crate::model::{Backend, Column, QueryResult, Row, TypeKind, Value};
 
 /// A connection to a SQLite database, backed by a sqlx pool.
@@ -36,6 +39,16 @@ impl SqliteDriver {
     let options = SqliteConnectOptions::new().filename(path).read_only(true);
     let pool = SqlitePool::connect_with(options).await.map_err(driver_err)?;
     Ok(Self { pool })
+  }
+
+  /// Introspect the connected database into the pure [`catalog::Catalog`].
+  ///
+  /// SQLite's single default schema maps to one `Database` / `Schema`, both
+  /// named `main`. Inherent for now; it joins the `Driver` port when the trait
+  /// freezes with the second impl (#11).
+  pub async fn introspect(&self) -> Result<catalog::Catalog> {
+    // stub — introspection is pinned by the red test first
+    Ok(catalog::Catalog { databases: Vec::new() })
   }
 }
 
