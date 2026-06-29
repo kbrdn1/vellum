@@ -15,6 +15,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Phase 1 — connection secrets core (#9):** secrets never live in
+  `.vellum.toml`. A `SecretStore` port (set / get / delete a password by
+  connection name) with an in-memory `MemoryStore` impl, and a `resolve` rule
+  a driver consumes: a `VELLUM_DSN_<NAME>` environment override (frozen
+  transform: uppercase, non-alphanumeric → `_`) wins, otherwise the stored
+  password, else nothing. In-memory secrets are `secrecy::SecretString` —
+  zeroized on drop and redacted in `Debug`, guarded by a regression test. Env
+  precedence is tested through an injected reader (no `set_var` data race). The
+  OS keyring backend and the `vellum connect` command that populates it are
+  scoped to a follow-up (built with their consumer, verifiable against a real
+  keychain — not provisionable in CI).
 - **Phase 1 — `.vellum.toml` connection manager (#8):** parse the config file
   into a typed `Config` — `[connections.<name>]` (backend, host, port, user,
   database, path, sslmode) plus a `[ui]` block (`page_size` default 200,
