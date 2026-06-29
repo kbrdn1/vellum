@@ -92,13 +92,17 @@ impl SqliteDriver {
     })
   }
 
-  /// Columns of `relation` from `pragma_table_info`, in ordinal (`cid`) order.
+  /// Columns of `relation` in ordinal (`cid`) order. Uses `pragma_table_xinfo`
+  /// (not `table_info`) so generated columns are listed — a FK may reference
+  /// one. `hidden = 1` columns (virtual-table internals) are excluded; normal
+  /// (0) and generated (2 = virtual, 3 = stored) columns are kept.
   async fn introspect_columns(&self, relation: &str) -> Result<Vec<catalog::Column>> {
-    let rows = sqlx::query("SELECT name, type, \"notnull\", pk FROM pragma_table_info(?1) ORDER BY cid")
-      .bind(relation)
-      .fetch_all(&self.pool)
-      .await
-      .map_err(driver_err)?;
+    let rows =
+      sqlx::query("SELECT name, type, \"notnull\", pk FROM pragma_table_xinfo(?1) WHERE hidden != 1 ORDER BY cid")
+        .bind(relation)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(driver_err)?;
 
     let mut columns = Vec::with_capacity(rows.len());
     for row in &rows {
@@ -137,10 +141,7 @@ impl SqliteDriver {
       let from: String = row.try_get("from").map_err(driver_err)?;
       // `to` is NULL (decoded as empty) when the FK omits its target columns —
       // an implicit reference to the parent's primary key, filled in below.
-      let to: Option<String> = row
-        .try_get::<Option<String>, _>("to")
-        .map_err(driver_err)?
-        .filter(|name| !name.is_empty());
+      let to: Option<String> = row.try_get::<Option<String>, _>("to").map_err(driver_err)?;
 
       if current_id == Some(id) {
         if let Some(fk) = foreign_keys.last_mut() {
