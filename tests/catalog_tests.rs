@@ -102,3 +102,93 @@ fn preserves_insertion_order() {
   let names: Vec<&str> = schema.relations.iter().map(|r| r.name.as_str()).collect();
   assert_eq!(names, ["orders", "users"]);
 }
+
+#[test]
+fn resolves_a_same_schema_foreign_key() {
+  // `orders.user_id` → `users.id`, both in `public` (reference omits a schema).
+  let catalog = sample_catalog();
+  let db = catalog.database("app").unwrap();
+  let orders = db.schema("public").unwrap().relation("orders").unwrap();
+  let fk = &orders.foreign_keys[0];
+
+  let target = db.resolve(fk, "public").expect("the FK resolves to a relation");
+  assert_eq!(target.name, "users");
+
+  // The referenced columns actually exist on the target.
+  for col in &fk.references.columns {
+    assert!(
+      target.column(col).is_some(),
+      "referenced column `{col}` must exist on the target"
+    );
+  }
+}
+
+#[test]
+fn resolves_a_cross_schema_foreign_key() {
+  // A reference that names a schema is followed across schemas, not assumed to
+  // be in the owning relation's schema.
+  let db = Database {
+    name: "app".to_string(),
+    schemas: vec![
+      Schema {
+        name: "sales".to_string(),
+        relations: vec![Relation {
+          name: "orders".to_string(),
+          kind: RelationKind::Table,
+          columns: vec![Column {
+            name: "customer_id".to_string(),
+            data_type: "bigint".to_string(),
+            nullable: false,
+            primary_key: false,
+          }],
+          foreign_keys: vec![ForeignKey {
+            name: None,
+            columns: vec!["customer_id".to_string()],
+            references: Reference {
+              schema: Some("crm".to_string()),
+              relation: "customers".to_string(),
+              columns: vec!["id".to_string()],
+            },
+          }],
+        }],
+      },
+      Schema {
+        name: "crm".to_string(),
+        relations: vec![Relation {
+          name: "customers".to_string(),
+          kind: RelationKind::Table,
+          columns: vec![Column {
+            name: "id".to_string(),
+            data_type: "bigint".to_string(),
+            nullable: false,
+            primary_key: true,
+          }],
+          foreign_keys: vec![],
+        }],
+      },
+    ],
+  };
+
+  let fk = &db.schema("sales").unwrap().relation("orders").unwrap().foreign_keys[0];
+  let target = db.resolve(fk, "sales").expect("cross-schema FK resolves");
+  assert_eq!(target.name, "customers");
+  assert!(target.column("id").is_some());
+}
+
+#[test]
+fn unresolvable_foreign_key_is_none() {
+  // A reference to a relation that isn't in the database resolves to `None`,
+  // not a panic.
+  let catalog = sample_catalog();
+  let db = catalog.database("app").unwrap();
+  let dangling = ForeignKey {
+    name: None,
+    columns: vec!["user_id".to_string()],
+    references: Reference {
+      schema: None,
+      relation: "ghost".to_string(),
+      columns: vec!["id".to_string()],
+    },
+  };
+  assert!(db.resolve(&dangling, "public").is_none());
+}
