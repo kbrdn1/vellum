@@ -149,6 +149,22 @@ impl Config {
       );
     }
 
+    // Two connection names must not collide under the `VELLUM_DSN_<NAME>`
+    // override (#9): the normalisation (uppercase, non-alphanumeric → `_`) is
+    // not injective, so distinct names can map to one env var. Reject the
+    // ambiguity here — otherwise one connection's override could silently
+    // mis-route a secret to another.
+    let mut env_overrides: BTreeMap<String, String> = BTreeMap::new();
+    for name in connections.keys() {
+      let env = crate::secrets::env_var_name(name);
+      if let Some(first) = env_overrides.insert(env.clone(), name.clone()) {
+        return Err(VellumError::Config(format!(
+          "connections `{first}` and `{name}` both map to the `{env}` environment \
+           override — rename one so secret overrides stay unambiguous"
+        )));
+      }
+    }
+
     Ok(Config {
       connections,
       ui: raw.ui,
