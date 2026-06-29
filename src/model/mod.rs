@@ -6,9 +6,13 @@
 //! introspection in Phase 1 — see ARCHITECTURE §4.
 
 pub mod backend;
+pub mod catalog;
 pub mod result;
 pub mod value;
 
 pub use backend::Backend;
+// Only the `Catalog` root is re-exported flat; its nested types live under
+// `catalog::` (a `catalog::Column` would clash with `result::Column`).
+pub use catalog::Catalog;
 pub use result::{Column, QueryResult, Row};
 pub use value::{TypeKind, Value};
