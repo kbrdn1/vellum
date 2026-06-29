@@ -2,7 +2,7 @@
 
 [![ci](https://github.com/kbrdn1/vellum/actions/workflows/ci.yml/badge.svg)](https://github.com/kbrdn1/vellum/actions/workflows/ci.yml)
 [![license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE.md)
-[![rust](https://img.shields.io/badge/rust-1.86%2B-orange?logo=rust)](https://www.rust-lang.org/)
+[![rust](https://img.shields.io/badge/rust-1.88%2B-orange?logo=rust)](https://www.rust-lang.org/)
 [![status](https://img.shields.io/badge/status-pre--0.1%20%C2%B7%20WIP-yellow)](#status)
 
 Browse, query, and **safely edit** databases from the terminal — with a

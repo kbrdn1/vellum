@@ -15,6 +15,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Phase 0 — result table TUI (#6):** render a `QueryResult` as a scrollable
+  ratatui table with vim navigation, split TEA-style — a pure
+  `tui/state/table.rs` (row cursor + horizontal column scroll, all clamped to
+  bounds), an `App` whose `on_key` is the whole input contract (`j`/`k`/`g`/`G`
+  move the row cursor, `h`/`l` scroll columns, `q` quits, unknown keys no-op),
+  and a thin `tui/view.rs` render (content-fit column widths, cursor highlight,
+  no `println!`). Vertical scroll-into-view is delegated to ratatui's stateful
+  widget keyed on the cursor. The state machine is unit-tested ratatui-free
+  (`tests/tui_app_tests.rs`); the render is smoke-tested through `TestBackend`
+  (`tests/tui_view_tests.rs`). The live event loop wires in with the one-shot /
+  interactive mode (#7).
 - **Phase 0 — SQLite driver (#5):** the `Driver` port sketch (`connect` /
   `query` / `kind`) and its first and only impl, `SqliteDriver` (sqlx, bundled
   libsqlite3, in-process — no system dependency). Maps SQLite's five storage
@@ -43,6 +54,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   workflows, Homebrew tap template, dependabot, issue / PR templates, opt-in
   pre-commit hook, Makefile, house rules (CLAUDE.md / AGENTS.md), and a green
   TDD harness (`tests/cli_binary.rs` canary). Pre-Phase-0.
+
+### Changed
+
+- **MSRV raised to 1.88** (was 1.86): ratatui 0.30 — the Phase 0 TUI stack —
+  declares rust-version 1.88, so the crate floor follows. The README badge and
+  the CONTRIBUTING prerequisite are updated to match; CI enforces it via
+  `clippy::incompatible_msrv` against `@stable`. (#6)
 
 ## Past releases
 
