@@ -76,6 +76,44 @@ fn db_without_query_is_a_usage_error() {
 }
 
 #[test]
+fn one_shot_opens_db_path_with_url_special_chars() {
+  // A filename with `?` / `%` must open the file the user named, not be parsed
+  // as a `sqlite:` DSN (which would split on `?` and percent-decode). Pins the
+  // DSN-encoding in `cli::sqlite_dsn`.
+  let dir = tempfile::tempdir().unwrap();
+  let path = dir.path().join("we?rd%name.sqlite");
+  common::seed_sql(
+    &path,
+    &[
+      "create table items (id integer, label text)",
+      "insert into items (id, label) values (1, 'alpha')",
+    ],
+  );
+  let mut cmd = Command::cargo_bin("vellum").unwrap();
+  cmd.arg("--db").arg(&path).arg("select label from items order by id");
+  cmd.assert().success().stdout(predicate::str::contains("alpha"));
+}
+
+#[test]
+fn one_shot_escapes_tabs_and_newlines_in_cells() {
+  // A TEXT cell containing a tab + newline must not break the TSV row/column
+  // structure: it is escaped (`\t`, `\n`) on one line, not split across lines.
+  let dir = tempfile::tempdir().unwrap();
+  let path = dir.path().join("escape.sqlite");
+  common::seed_sql(
+    &path,
+    &["create table t (v text)", "insert into t (v) values ('a\tb\nc')"],
+  );
+  let mut cmd = Command::cargo_bin("vellum").unwrap();
+  cmd.arg("--db").arg(&path).arg("select v from t");
+  cmd
+    .assert()
+    .success()
+    // The literal escaped form appears; the raw tab/newline does not split it.
+    .stdout(predicate::str::contains("a\\tb\\nc"));
+}
+
+#[test]
 fn version_prints_semver() {
   let mut cmd = Command::cargo_bin("vellum").unwrap();
   cmd.arg("--version");

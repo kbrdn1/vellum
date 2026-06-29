@@ -53,8 +53,7 @@ pub async fn run(cli: Cli) -> Result<()> {
       if interactive {
         tui::run(result)
       } else {
-        print_result(&result);
-        Ok(())
+        print_result(&result)
       }
     }
     (Some(_), None) => Err(VellumError::Arg(
@@ -71,23 +70,71 @@ or `--help` for usage."
   }
 }
 
-/// Build the SQLite DSN the driver expects from a filesystem path.
+/// Build the SQLite DSN the driver expects from a filesystem path. sqlx parses
+/// the DSN as a URL — `?` starts query parameters and `%xx` is percent-decoded —
+/// so the structural characters are percent-encoded here, making the filename
+/// round-trip to exactly `path` instead of being truncated or redirected to
+/// another file. (`%` first, so the escapes introduced below aren't re-encoded.)
 fn sqlite_dsn(path: &Path) -> String {
-  format!("sqlite:{}", path.display())
+  let encoded = path
+    .to_string_lossy()
+    .replace('%', "%25")
+    .replace('?', "%3F")
+    .replace('#', "%23");
+  format!("sqlite:{encoded}")
 }
 
-/// Print a query result to stdout as tab-separated rows (header first). Stable
-/// and scriptable; cell rendering follows `Value`'s `Display`.
-fn print_result(result: &QueryResult) {
+/// Print a query result to stdout as tab-separated rows (header first). Tabs,
+/// newlines, and backslashes inside a cell are escaped so the row/column
+/// structure survives arbitrary TEXT values; cells otherwise render via
+/// `Value`'s `Display`. Writes through a locked handle and treats a closed
+/// stdout (e.g. piped into `head`) as a clean exit rather than a panic.
+fn print_result(result: &QueryResult) -> Result<()> {
+  use std::io::Write as _;
+
+  let mut out = std::io::stdout().lock();
   let header = result
     .columns
     .iter()
-    .map(|c| c.name.as_str())
+    .map(|c| escape_cell(&c.name))
     .collect::<Vec<_>>()
     .join("\t");
-  println!("{header}");
+  if let Err(e) = writeln!(out, "{header}") {
+    return swallow_broken_pipe(e);
+  }
   for row in &result.rows {
-    let line = row.iter().map(|v| v.to_string()).collect::<Vec<_>>().join("\t");
-    println!("{line}");
+    let line = row
+      .iter()
+      .map(|v| escape_cell(&v.to_string()))
+      .collect::<Vec<_>>()
+      .join("\t");
+    if let Err(e) = writeln!(out, "{line}") {
+      return swallow_broken_pipe(e);
+    }
+  }
+  if let Err(e) = out.flush() {
+    return swallow_broken_pipe(e);
+  }
+  Ok(())
+}
+
+/// Escape the TSV-structural characters in a cell so a tab or newline in TEXT
+/// data can't break the column/row layout. Reversible: `\` → `\\` first, then
+/// tab / newline / carriage return.
+fn escape_cell(s: &str) -> String {
+  s.replace('\\', "\\\\")
+    .replace('\t', "\\t")
+    .replace('\n', "\\n")
+    .replace('\r', "\\r")
+}
+
+/// A closed stdout (broken pipe, e.g. piped into `head`) is a normal end, not a
+/// failure: return `Ok` instead of letting the write panic (exit 101). Any other
+/// I/O error propagates as `VellumError::Io`.
+fn swallow_broken_pipe(e: std::io::Error) -> Result<()> {
+  if e.kind() == std::io::ErrorKind::BrokenPipe {
+    Ok(())
+  } else {
+    Err(e.into())
   }
 }
