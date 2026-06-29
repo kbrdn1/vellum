@@ -45,13 +45,13 @@ pub struct MemoryStore {
 impl SecretStore for MemoryStore {
   fn set(&self, connection: &str, secret: &SecretString) -> Result<()> {
     let mut map = self.inner.lock().unwrap_or_else(|p| p.into_inner());
-    map.insert(connection.to_string(), clone_secret(secret));
+    map.insert(connection.to_string(), secret.clone());
     Ok(())
   }
 
   fn get(&self, connection: &str) -> Result<Option<SecretString>> {
     let map = self.inner.lock().unwrap_or_else(|p| p.into_inner());
-    Ok(map.get(connection).map(clone_secret))
+    Ok(map.get(connection).cloned())
   }
 
   fn delete(&self, connection: &str) -> Result<()> {
@@ -59,12 +59,6 @@ impl SecretStore for MemoryStore {
     map.remove(connection);
     Ok(())
   }
-}
-
-/// `SecretString` is not `Clone`, so duplicate it through its exposed bytes.
-/// The transient `String` is the only extra copy and is dropped immediately.
-fn clone_secret(secret: &SecretString) -> SecretString {
-  SecretString::from(secret.expose_secret().to_string())
 }
 
 /// The credential a driver should use for a connection. Holds a redacted
