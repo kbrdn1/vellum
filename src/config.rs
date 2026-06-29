@@ -82,9 +82,7 @@ impl Config {
   ///
   /// Fails with [`VellumError::Config`] on malformed TOML, an unknown
   /// `backend`, an unknown key, or a plaintext secret.
-  pub fn from_toml_str(_input: &str) -> Result<Config> {
-    Err(VellumError::Config(
-      "config parsing not implemented".to_string(),
-    ))
+  pub fn from_toml_str(input: &str) -> Result<Config> {
+    toml::from_str(input).map_err(|e| VellumError::Config(e.message().to_string()))
   }
 }
