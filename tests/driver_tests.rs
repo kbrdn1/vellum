@@ -10,6 +10,7 @@ use sqlx::sqlite::{SqliteConnectOptions, SqlitePool};
 use sqlx::Executor as _;
 use tempfile::NamedTempFile;
 use vellum::driver::{Driver, SqliteDriver};
+use vellum::model::catalog::RelationKind;
 use vellum::model::{Backend, TypeKind, Value};
 
 /// A read-only `SqliteDriver` over a freshly-seeded tempfile database. The
@@ -234,4 +235,267 @@ async fn open_readonly_opens_a_file_by_literal_path() {
   assert_eq!(driver.kind(), Backend::Sqlite);
   assert_eq!(result.rows.len(), 1);
   assert_eq!(result.rows[0][0], Value::Text("alpha".to_string()));
+}
+
+/// A read-only `SqliteDriver` over a tempfile seeded with a small relational
+/// schema: `users` (PK, a NOT NULL and a nullable column), `orders` (a FK to
+/// `users`), and a view. The `NamedTempFile` guard must outlive the driver.
+async fn introspectable_driver() -> (SqliteDriver, NamedTempFile) {
+  let file = NamedTempFile::new().expect("create temp db file");
+  let dsn = format!("sqlite:{}", file.path().display());
+
+  let setup = SqlitePool::connect_with(
+    SqliteConnectOptions::from_str(&dsn)
+      .expect("parse dsn")
+      .create_if_missing(true),
+  )
+  .await
+  .expect("open writable connection for seeding");
+  for stmt in [
+    "create table users (id integer primary key, email text not null, bio text)",
+    "create table orders (id integer primary key, \
+       user_id integer not null references users(id), total real)",
+    "create view recent_orders as select id, user_id from orders",
+  ] {
+    setup.execute(stmt).await.expect("seed schema");
+  }
+  setup.close().await;
+
+  let driver = SqliteDriver::connect(&dsn).await.expect("connect read-only");
+  (driver, file)
+}
+
+#[tokio::test]
+async fn sqlite_introspection_returns_tables_columns_pk_fk() {
+  let (driver, _db) = introspectable_driver().await;
+  let catalog = driver.introspect().await.expect("introspect the schema");
+
+  let db = catalog.database("main").expect("database `main`");
+  let schema = db.schema("main").expect("schema `main`");
+
+  // Tables and the view, in `sqlite_master` name order.
+  let names: Vec<&str> = schema.relations.iter().map(|r| r.name.as_str()).collect();
+  assert_eq!(names, ["orders", "recent_orders", "users"]);
+
+  let users = schema.relation("users").expect("relation `users`");
+  assert_eq!(users.kind, RelationKind::Table);
+
+  let id = users.column("id").expect("column `id`");
+  assert!(id.primary_key, "id is the primary key");
+  assert_eq!(id.data_type.to_uppercase(), "INTEGER");
+
+  // `email` is NOT NULL; `bio` is nullable. (The PK's own nullability is a
+  // SQLite quirk — not asserted here.)
+  let email = users.column("email").expect("column `email`");
+  assert!(!email.nullable, "email is NOT NULL");
+  assert!(!email.primary_key);
+  let bio = users.column("bio").expect("column `bio`");
+  assert!(bio.nullable, "bio admits NULL");
+
+  let recent = schema.relation("recent_orders").expect("relation `recent_orders`");
+  assert_eq!(recent.kind, RelationKind::View);
+
+  // `orders.user_id` → `users.id`.
+  let orders = schema.relation("orders").expect("relation `orders`");
+  assert_eq!(orders.foreign_keys.len(), 1);
+  let fk = &orders.foreign_keys[0];
+  assert_eq!(fk.columns, ["user_id"]);
+  assert_eq!(fk.references.relation, "users");
+  assert_eq!(fk.references.columns, ["id"]);
+  let target = db.resolve(fk, "main").expect("the FK resolves");
+  assert_eq!(target.name, "users");
+}
+
+#[tokio::test]
+async fn sqlite_introspection_folds_composite_and_implicit_foreign_keys() {
+  // A composite FK with an *implicit* target (`references account`, no columns)
+  // — `pragma_foreign_key_list` reports `to = NULL` for each row, and the
+  // target is the parent's primary key.
+  let file = NamedTempFile::new().expect("create temp db file");
+  let dsn = format!("sqlite:{}", file.path().display());
+  let setup = SqlitePool::connect_with(
+    SqliteConnectOptions::from_str(&dsn)
+      .expect("parse dsn")
+      .create_if_missing(true),
+  )
+  .await
+  .expect("open writable connection for seeding");
+  for stmt in [
+    "create table account (org_id integer, user_id integer, primary key (org_id, user_id))",
+    "create table membership (org_id integer, user_id integer, role text, \
+       foreign key (org_id, user_id) references account)",
+  ] {
+    setup.execute(stmt).await.expect("seed schema");
+  }
+  setup.close().await;
+  let driver = SqliteDriver::connect(&dsn).await.expect("connect read-only");
+
+  let catalog = driver.introspect().await.expect("introspect the schema");
+  let db = catalog.database("main").expect("database `main`");
+  let membership = db
+    .schema("main")
+    .unwrap()
+    .relation("membership")
+    .expect("relation `membership`");
+
+  assert_eq!(membership.foreign_keys.len(), 1);
+  let fk = &membership.foreign_keys[0];
+  // Composite local columns folded into one key (ordered by seq).
+  assert_eq!(fk.columns, ["org_id", "user_id"]);
+  assert_eq!(fk.references.relation, "account");
+  // Implicit target resolves to the parent's composite primary key.
+  assert_eq!(fk.references.columns, ["org_id", "user_id"]);
+  assert_eq!(db.resolve(fk, "main").expect("FK resolves").name, "account");
+}
+
+#[tokio::test]
+async fn sqlite_introspection_keeps_user_tables_prefixed_like_sqlite() {
+  // `NOT LIKE 'sqlite_%'` would wrongly drop `sqlitexdata` — `_` is a LIKE
+  // wildcard, so it matches the `x`. Only the *literal* `sqlite_` internal
+  // tables must be excluded.
+  let file = NamedTempFile::new().expect("create temp db file");
+  let dsn = format!("sqlite:{}", file.path().display());
+  let setup = SqlitePool::connect_with(
+    SqliteConnectOptions::from_str(&dsn)
+      .expect("parse dsn")
+      .create_if_missing(true),
+  )
+  .await
+  .expect("open writable connection for seeding");
+  setup
+    .execute("create table sqlitexdata (id integer)")
+    .await
+    .expect("seed a table whose name starts with `sqlite`");
+  setup.close().await;
+  let driver = SqliteDriver::connect(&dsn).await.expect("connect read-only");
+
+  let catalog = driver.introspect().await.expect("introspect the schema");
+  let schema = catalog.database("main").unwrap().schema("main").unwrap();
+  assert!(
+    schema.relation("sqlitexdata").is_some(),
+    "a user table named like `sqlite...` (no literal `sqlite_`) must not be dropped"
+  );
+}
+
+#[tokio::test]
+async fn sqlite_introspection_includes_generated_columns() {
+  // `pragma_table_info` omits generated columns, but a FK can reference one —
+  // so the catalog must list them (`pragma_table_xinfo`). Internal hidden
+  // columns stay excluded.
+  let file = NamedTempFile::new().expect("create temp db file");
+  let dsn = format!("sqlite:{}", file.path().display());
+  let setup = SqlitePool::connect_with(
+    SqliteConnectOptions::from_str(&dsn)
+      .expect("parse dsn")
+      .create_if_missing(true),
+  )
+  .await
+  .expect("open writable connection for seeding");
+  setup
+    .execute("create table widget (w integer, h integer, area integer generated always as (w * h) stored)")
+    .await
+    .expect("seed a table with a generated column");
+  setup.close().await;
+  let driver = SqliteDriver::connect(&dsn).await.expect("connect read-only");
+
+  let catalog = driver.introspect().await.expect("introspect the schema");
+  let widget = catalog
+    .database("main")
+    .unwrap()
+    .schema("main")
+    .unwrap()
+    .relation("widget")
+    .expect("relation `widget`");
+  let names: Vec<&str> = widget.columns.iter().map(|c| c.name.as_str()).collect();
+  assert!(
+    names.contains(&"area"),
+    "the generated column `area` must be listed, got {names:?}"
+  );
+}
+
+#[tokio::test]
+async fn sqlite_introspection_excludes_hidden_virtual_table_columns() {
+  // `pragma_table_xinfo` lists a virtual table's internal columns with
+  // `hidden = 1` — an fts5 table exposes a column named after the table and a
+  // `rank` column, both hidden. Those must be excluded; only the declared
+  // columns (`hidden = 0`) and generated ones (`hidden = 2/3`) belong in the
+  // catalog. This pins the `WHERE hidden != 1` filter against regression.
+  let file = NamedTempFile::new().expect("create temp db file");
+  let dsn = format!("sqlite:{}", file.path().display());
+  let setup = SqlitePool::connect_with(
+    SqliteConnectOptions::from_str(&dsn)
+      .expect("parse dsn")
+      .create_if_missing(true),
+  )
+  .await
+  .expect("open writable connection for seeding");
+  setup
+    .execute("create virtual table docs using fts5(title, body)")
+    .await
+    .expect("seed an fts5 virtual table");
+  setup.close().await;
+  let driver = SqliteDriver::connect(&dsn).await.expect("connect read-only");
+
+  let catalog = driver.introspect().await.expect("introspect the schema");
+  let docs = catalog
+    .database("main")
+    .unwrap()
+    .schema("main")
+    .unwrap()
+    .relation("docs")
+    .expect("relation `docs`");
+  let names: Vec<&str> = docs.columns.iter().map(|c| c.name.as_str()).collect();
+  // The two declared columns survive; the hidden `docs` / `rank` internals must
+  // not leak into the catalog.
+  assert_eq!(
+    names,
+    ["title", "body"],
+    "only the declared fts5 columns are listed (hidden internals excluded), got {names:?}"
+  );
+}
+
+#[tokio::test]
+async fn sqlite_introspection_keeps_an_explicit_empty_named_target_column() {
+  // A foreign key can name a target column that is the empty string
+  // (`references parent("")`). `pragma_foreign_key_list` reports `to = ''`
+  // (text) — distinct from the NULL of an *implicit* target. The empty name
+  // must stay an explicit reference: never folded to the parent's primary key
+  // the way an implicit (NULL) target is. This pins the `to: Option<String>`
+  // read (only NULL is implicit) against regression.
+  let file = NamedTempFile::new().expect("create temp db file");
+  let dsn = format!("sqlite:{}", file.path().display());
+  let setup = SqlitePool::connect_with(
+    SqliteConnectOptions::from_str(&dsn)
+      .expect("parse dsn")
+      .create_if_missing(true),
+  )
+  .await
+  .expect("open writable connection for seeding");
+  for stmt in [
+    // `parent` has NO primary key — only a unique column named "". If the empty
+    // target were mistaken for NULL (implicit), it would resolve to the parent
+    // PK and come back empty; staying explicit keeps the `""` column name.
+    "create table parent(\"\" integer unique)",
+    "create table child(x integer references parent(\"\"))",
+  ] {
+    setup.execute(stmt).await.expect("seed schema");
+  }
+  setup.close().await;
+  let driver = SqliteDriver::connect(&dsn).await.expect("connect read-only");
+
+  let catalog = driver.introspect().await.expect("introspect the schema");
+  let child = catalog
+    .database("main")
+    .unwrap()
+    .schema("main")
+    .unwrap()
+    .relation("child")
+    .expect("relation `child`");
+  assert_eq!(child.foreign_keys.len(), 1);
+  let fk = &child.foreign_keys[0];
+  assert_eq!(fk.columns, ["x"]);
+  assert_eq!(fk.references.relation, "parent");
+  // Explicit empty-string target — NOT the implicit-target fallback (which
+  // would resolve to the parent PK and, with no PK here, come back empty).
+  assert_eq!(fk.references.columns, [""]);
 }

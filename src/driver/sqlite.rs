@@ -6,7 +6,7 @@ use std::path::Path;
 use std::str::FromStr;
 
 use async_trait::async_trait;
-use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqliteRow};
+use sqlx::sqlite::{SqliteConnectOptions, SqliteConnection, SqlitePool, SqliteRow};
 // Trait methods are imported anonymously to avoid colliding with the domain
 // `Column` / `Row` types.
 use sqlx::{Column as _, Executor as _, Row as _, TypeInfo as _, ValueRef as _};
@@ -17,6 +17,9 @@ use sqlparser::parser::Parser;
 
 use crate::driver::Driver;
 use crate::error::{Result, VellumError};
+// `catalog` is module-qualified so its `Column` doesn't clash with the result
+// `Column` imported flat below.
+use crate::model::catalog;
 use crate::model::{Backend, Column, QueryResult, Row, TypeKind, Value};
 
 /// A connection to a SQLite database, backed by a sqlx pool.
@@ -37,6 +40,161 @@ impl SqliteDriver {
     let pool = SqlitePool::connect_with(options).await.map_err(driver_err)?;
     Ok(Self { pool })
   }
+
+  /// Introspect the connected database into the pure [`catalog::Catalog`].
+  ///
+  /// Reads `sqlite_master` (tables + views, `sqlite_*` internal objects
+  /// excluded) and the `pragma_*` table-valued functions (columns, PKs, FKs) on
+  /// a single read transaction for a consistent snapshot. The queries go
+  /// straight to the connection (not the `query` read guard) — `PRAGMA` is
+  /// read-only by nature and wouldn't pass the SELECT-only check anyway. SQLite's
+  /// single default schema maps to one `Database` / `Schema`, both named `main`.
+  /// Inherent for now; it joins the `Driver` port when the trait freezes with
+  /// the second impl (#11).
+  pub async fn introspect(&self) -> Result<catalog::Catalog> {
+    // Run the whole introspection on one read transaction so the snapshot is
+    // consistent — a concurrent DDL can't have a relation listed here and then
+    // dropped before its columns / FKs are read. Read-only: dropping the
+    // transaction rolls back (nothing is written).
+    let mut tx = self.pool.begin().await.map_err(driver_err)?;
+
+    let relation_rows = sqlx::query(
+      // `GLOB 'sqlite_*'` matches the *literal* `sqlite_` prefix — unlike
+      // `LIKE 'sqlite_%'`, whose `_` is a wildcard that would also drop a user
+      // table like `sqlitexdata`.
+      "SELECT name, type FROM sqlite_master \
+       WHERE type IN ('table', 'view') AND name NOT GLOB 'sqlite_*' \
+       ORDER BY name",
+    )
+    .fetch_all(&mut *tx)
+    .await
+    .map_err(driver_err)?;
+
+    let mut relations = Vec::with_capacity(relation_rows.len());
+    for row in &relation_rows {
+      let name: String = row.try_get("name").map_err(driver_err)?;
+      let type_name: String = row.try_get("type").map_err(driver_err)?;
+      let kind = if type_name == "view" {
+        catalog::RelationKind::View
+      } else {
+        catalog::RelationKind::Table
+      };
+      let columns = introspect_columns(&mut tx, &name).await?;
+      let foreign_keys = introspect_foreign_keys(&mut tx, &name).await?;
+      relations.push(catalog::Relation {
+        name,
+        kind,
+        columns,
+        foreign_keys,
+      });
+    }
+
+    Ok(catalog::Catalog {
+      databases: vec![catalog::Database {
+        name: "main".to_string(),
+        schemas: vec![catalog::Schema {
+          name: "main".to_string(),
+          relations,
+        }],
+      }],
+    })
+  }
+}
+
+/// Columns of `relation` in ordinal (`cid`) order. Uses `pragma_table_xinfo`
+/// (not `table_info`) so generated columns are listed — a FK may reference one.
+/// `hidden = 1` columns (virtual-table internals) are excluded; normal (0) and
+/// generated (2 = virtual, 3 = stored) columns are kept.
+async fn introspect_columns(conn: &mut SqliteConnection, relation: &str) -> Result<Vec<catalog::Column>> {
+  let rows =
+    sqlx::query("SELECT name, type, \"notnull\", pk FROM pragma_table_xinfo(?1) WHERE hidden != 1 ORDER BY cid")
+      .bind(relation)
+      .fetch_all(&mut *conn)
+      .await
+      .map_err(driver_err)?;
+
+  let mut columns = Vec::with_capacity(rows.len());
+  for row in &rows {
+    let name: String = row.try_get("name").map_err(driver_err)?;
+    let data_type: String = row.try_get("type").map_err(driver_err)?;
+    let notnull: i64 = row.try_get("notnull").map_err(driver_err)?;
+    let pk: i64 = row.try_get("pk").map_err(driver_err)?;
+    columns.push(catalog::Column {
+      name,
+      data_type,
+      // Faithful to SQLite: `nullable = (notnull == 0)` — *not* "pk implies
+      // not-null". `INTEGER PRIMARY KEY` reports `notnull = 0`, and a
+      // non-INTEGER SQLite `PRIMARY KEY` genuinely admits NULL.
+      nullable: notnull == 0,
+      primary_key: pk > 0,
+    });
+  }
+  Ok(columns)
+}
+
+/// Foreign keys of `relation` from `pragma_foreign_key_list`. A multi-column
+/// key spans several rows sharing an `id` (ordered by `seq`); they are folded
+/// into one [`catalog::ForeignKey`]. An implicit target (every `to` is NULL)
+/// references the parent's primary key.
+async fn introspect_foreign_keys(conn: &mut SqliteConnection, relation: &str) -> Result<Vec<catalog::ForeignKey>> {
+  let rows = sqlx::query("SELECT id, \"table\", \"from\", \"to\" FROM pragma_foreign_key_list(?1) ORDER BY id, seq")
+    .bind(relation)
+    .fetch_all(&mut *conn)
+    .await
+    .map_err(driver_err)?;
+
+  let mut foreign_keys: Vec<catalog::ForeignKey> = Vec::new();
+  let mut current_id: Option<i64> = None;
+  for row in &rows {
+    let id: i64 = row.try_get("id").map_err(driver_err)?;
+    let referenced: String = row.try_get("table").map_err(driver_err)?;
+    let from: String = row.try_get("from").map_err(driver_err)?;
+    // `to` is NULL when the FK omits its target columns — an implicit reference
+    // to the parent's primary key, filled in below. Only `None` is implicit; a
+    // column explicitly named `""` stays explicit.
+    let to: Option<String> = row.try_get::<Option<String>, _>("to").map_err(driver_err)?;
+
+    if current_id == Some(id) {
+      if let Some(fk) = foreign_keys.last_mut() {
+        fk.columns.push(from);
+        fk.references.columns.extend(to);
+      }
+    } else {
+      current_id = Some(id);
+      foreign_keys.push(catalog::ForeignKey {
+        name: None,
+        columns: vec![from],
+        references: catalog::Reference {
+          schema: None,
+          relation: referenced,
+          columns: to.into_iter().collect(),
+        },
+      });
+    }
+  }
+
+  for fk in &mut foreign_keys {
+    if fk.references.columns.is_empty() {
+      let parent = fk.references.relation.clone();
+      fk.references.columns = primary_key_columns(conn, &parent).await?;
+    }
+  }
+  Ok(foreign_keys)
+}
+
+/// The primary-key column names of `relation`, ordered by their position in the
+/// key (`pragma_table_info.pk`).
+async fn primary_key_columns(conn: &mut SqliteConnection, relation: &str) -> Result<Vec<String>> {
+  let rows = sqlx::query("SELECT name FROM pragma_table_info(?1) WHERE pk > 0 ORDER BY pk")
+    .bind(relation)
+    .fetch_all(&mut *conn)
+    .await
+    .map_err(driver_err)?;
+  let mut names = Vec::with_capacity(rows.len());
+  for row in &rows {
+    names.push(row.try_get::<String, _>("name").map_err(driver_err)?);
+  }
+  Ok(names)
 }
 
 #[async_trait]

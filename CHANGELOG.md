@@ -15,6 +15,21 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Phase 1 — SQLite introspection (#13):** `SqliteDriver::introspect()`
+  populates the pure `Catalog` (#12) from a live SQLite database — reading
+  `sqlite_master` (tables + views, internal `sqlite_*` excluded) and the
+  `pragma_table_xinfo` / `pragma_foreign_key_list` table-valued functions
+  (bound parameters), all on a single read transaction for a consistent
+  snapshot. Columns keep ordinal order, the declared type verbatim, faithful
+  nullability (`notnull == 0`, never "PK implies not-null" — a SQLite
+  `PRIMARY KEY` can admit NULL), and the PK flag; generated columns are
+  included. Multi-column foreign keys fold by id, and an implicit FK target
+  (`references parent` with no columns) resolves to the parent's primary key.
+  Internal tables are excluded by the literal `sqlite_` prefix (`GLOB`, not a
+  `LIKE` whose `_` is a wildcard).
+  SQLite's single schema maps to one `main` database / `main` schema. Tested
+  against an in-process seeded DB (no external service). Postgres / MySQL
+  introspection lands with their drivers (#10/#11), behind `it-db`.
 - **Phase 1 — schema introspection model (#12):** a pure `Catalog → Database →
   Schema → Relation(table|view) → Column` tree plus `ForeignKey` — zero I/O,
   the shape `Driver::introspect()` returns and the sidebar / autocomplete / ERD
