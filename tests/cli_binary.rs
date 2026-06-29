@@ -160,3 +160,56 @@ fn unknown_flag_exits_nonzero() {
   cmd.arg("--definitely-not-a-real-flag");
   cmd.assert().failure();
 }
+
+#[test]
+fn no_args_prints_banner_and_exits_zero() {
+  // No `--db`/query and not interactive: the binary prints a usage banner and
+  // exits 0 (the `(None, None)` branch of `cli::run`), not an error.
+  let mut cmd = Command::cargo_bin("vellum").unwrap();
+  cmd.assert().success().stdout(predicate::str::contains("--db"));
+}
+
+// A closed stdout (the reader hangs up, e.g. `vellum … | head`) must not crash
+// the binary. On Unix, Rust ignores SIGPIPE, so the write returns `BrokenPipe`
+// and `print_result` swallows it for a clean exit — this pins that it is exit
+// 0, never a 101 panic. Windows pipe/SIGPIPE semantics differ, so it is
+// Unix-only.
+#[cfg(unix)]
+#[test]
+fn one_shot_survives_a_closed_stdout_pipe() {
+  use std::io::Read as _;
+  use std::process::{Command as Proc, Stdio};
+
+  // A result far larger than the OS pipe buffer (~64 KiB) so the child is
+  // guaranteed to be mid-write when we drop the read end.
+  let dir = tempfile::tempdir().unwrap();
+  let path = dir.path().join("big.sqlite");
+  common::seed_sql(
+    &path,
+    &[
+      "create table t (n integer)",
+      "with recursive c(n) as (select 1 union all select n + 1 from c where n < 50000) \
+       insert into t (n) select n from c",
+    ],
+  );
+
+  let mut child = Proc::new(env!("CARGO_BIN_EXE_vellum"))
+    .arg("--db")
+    .arg(&path)
+    .arg("select n from t")
+    .stdout(Stdio::piped())
+    .spawn()
+    .expect("spawn vellum");
+
+  // Read a little, then drop stdout — closing the pipe under the child's feet.
+  let mut stdout = child.stdout.take().unwrap();
+  let mut buf = [0u8; 16];
+  let _ = stdout.read(&mut buf);
+  drop(stdout);
+
+  let status = child.wait().expect("wait for vellum");
+  assert!(
+    status.success(),
+    "a closed stdout must exit cleanly, not crash: {status:?}"
+  );
+}
