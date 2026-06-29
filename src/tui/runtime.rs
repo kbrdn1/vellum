@@ -1,8 +1,10 @@
 //! Interactive TUI runtime: take over the terminal, render the result table,
 //! and pump key events into the app until the user quits. The event loop is
 //! thin glue over the pure `App` state machine (tested in `tui_app_tests.rs`)
-//! and ratatui's `view` render; it owns no navigation logic of its own, so it
-//! is covered by the manual Phase 0 gate rather than an e2e pty test.
+//! and ratatui's `view` render. Its one piece of logic — the key→action
+//! mapping — is factored into the pure [`key_action`] (tested in
+//! `tui_runtime_tests.rs`); only the irreducible draw/read/quit glue needs a
+//! real terminal and is left to the manual Phase 0 gate.
 
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind};
 
@@ -30,22 +32,32 @@ pub fn run(result: QueryResult) -> Result<()> {
   outcome
 }
 
-/// Draw / read-key / dispatch until `app` asks to quit. Arrow keys alias onto
-/// `h`/`j`/`k`/`l`; `Esc` quits like `q`. Everything else is a no-op (the pure
-/// `App` ignores unbound keys).
+/// Map a key press to the `App::on_key` character it triggers, or `None` when
+/// the key is unbound. Pure (no terminal), so the arrow/`Esc` aliasing is
+/// testable without a pty: `Char(c)` passes through, the arrows alias the vim
+/// motions (`←`→`h`, `→`→`l`, `↑`→`k`, `↓`→`j`), `Esc` quits like `q`, and
+/// anything else is `None`.
+pub fn key_action(code: KeyCode) -> Option<char> {
+  match code {
+    KeyCode::Char(c) => Some(c),
+    KeyCode::Left => Some('h'),
+    KeyCode::Right => Some('l'),
+    KeyCode::Up => Some('k'),
+    KeyCode::Down => Some('j'),
+    KeyCode::Esc => Some('q'),
+    _ => None,
+  }
+}
+
+/// Draw / read-key / dispatch until `app` asks to quit. Key handling is the
+/// pure [`key_action`]; this loop only wires it to the terminal.
 fn event_loop(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> Result<()> {
   loop {
     terminal.draw(|frame| view::render(frame, &*app))?;
     if let Event::Key(key) = event::read()? {
       if key.kind == KeyEventKind::Press {
-        match key.code {
-          KeyCode::Char(c) => app.on_key(c),
-          KeyCode::Left => app.on_key('h'),
-          KeyCode::Right => app.on_key('l'),
-          KeyCode::Up => app.on_key('k'),
-          KeyCode::Down => app.on_key('j'),
-          KeyCode::Esc => app.on_key('q'),
-          _ => {}
+        if let Some(c) = key_action(key.code) {
+          app.on_key(c);
         }
       }
     }
