@@ -15,6 +15,20 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Phase 1 — PostgreSQL driver (#10):** the second `Driver` impl, `PostgresDriver`
+  (sqlx, rustls — `sslmode` honoured from the DSN, no OpenSSL system dep). Read-only
+  by construction with **two layers**: the shared single-`SELECT` parser guard
+  (now `driver::ensure_single_read_query`, parametrised by the engine dialect) and
+  a `default_transaction_read_only` session — load-bearing for PG, where a
+  data-modifying CTE (`WITH t AS (INSERT … RETURNING *) SELECT * FROM t`) parses
+  as one `Query` yet writes, so the parser guard alone is necessary but not
+  sufficient. Type mapping is conservative: bool / int2·4·8 / float4·8 / text
+  family / bytea decode to their `Value`; `json`·`jsonb` → `Json`; `uuid` → `Text`;
+  `timestamptz`·`timestamp`·`date`·`time` → `Timestamp`. The long tail (numeric,
+  arrays, enums, …) maps to an honest non-data marker `<typename>` — never a faked
+  value — with faithful decode tracked by #76. Integration tests live behind a new
+  `it-db` Cargo feature (Postgres service in CI; default `cargo test` stays on
+  in-memory SQLite, no Docker), seeded through a separate writable pool.
 - **Phase 1 — SQLite introspection (#13):** `SqliteDriver::introspect()`
   populates the pure `Catalog` (#12) from a live SQLite database — reading
   `sqlite_master` (tables + views, internal `sqlite_*` excluded) and the
