@@ -73,7 +73,7 @@ All tests live under `tests/` — no inline `#[cfg(test)] mod tests` blocks insi
 
 ### Prerequisites
 
-- Rust toolchain (stable, 1.86+ — the MSRV declared in `Cargo.toml`).
+- Rust toolchain (stable, 1.88+ — the MSRV declared in `Cargo.toml`).
 
 ### Build & run
 
