@@ -118,7 +118,7 @@ pub fn resolve_with(
   store: &dyn SecretStore,
   env: impl Fn(&str) -> Result<Option<String>>,
 ) -> Result<Option<Credential>> {
-  if let Some(dsn) = env(&env_var_name(connection)).ok().flatten() {
+  if let Some(dsn) = env(&env_var_name(connection))? {
     return Ok(Some(Credential::Dsn(SecretString::from(dsn))));
   }
   Ok(store.get(connection)?.map(Credential::Password))
