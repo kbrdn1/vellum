@@ -305,3 +305,45 @@ async fn sqlite_introspection_returns_tables_columns_pk_fk() {
   let target = db.resolve(fk, "main").expect("the FK resolves");
   assert_eq!(target.name, "users");
 }
+
+#[tokio::test]
+async fn sqlite_introspection_folds_composite_and_implicit_foreign_keys() {
+  // A composite FK with an *implicit* target (`references account`, no columns)
+  // — `pragma_foreign_key_list` reports `to = NULL` for each row, and the
+  // target is the parent's primary key.
+  let file = NamedTempFile::new().expect("create temp db file");
+  let dsn = format!("sqlite:{}", file.path().display());
+  let setup = SqlitePool::connect_with(
+    SqliteConnectOptions::from_str(&dsn)
+      .expect("parse dsn")
+      .create_if_missing(true),
+  )
+  .await
+  .expect("open writable connection for seeding");
+  for stmt in [
+    "create table account (org_id integer, user_id integer, primary key (org_id, user_id))",
+    "create table membership (org_id integer, user_id integer, role text, \
+       foreign key (org_id, user_id) references account)",
+  ] {
+    setup.execute(stmt).await.expect("seed schema");
+  }
+  setup.close().await;
+  let driver = SqliteDriver::connect(&dsn).await.expect("connect read-only");
+
+  let catalog = driver.introspect().await.expect("introspect the schema");
+  let db = catalog.database("main").expect("database `main`");
+  let membership = db
+    .schema("main")
+    .unwrap()
+    .relation("membership")
+    .expect("relation `membership`");
+
+  assert_eq!(membership.foreign_keys.len(), 1);
+  let fk = &membership.foreign_keys[0];
+  // Composite local columns folded into one key (ordered by seq).
+  assert_eq!(fk.columns, ["org_id", "user_id"]);
+  assert_eq!(fk.references.relation, "account");
+  // Implicit target resolves to the parent's composite primary key.
+  assert_eq!(fk.references.columns, ["org_id", "user_id"]);
+  assert_eq!(db.resolve(fk, "main").expect("FK resolves").name, "account");
+}
