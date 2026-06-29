@@ -14,3 +14,7 @@ Cargo.lock.bak
 # Private planning corpus — roadmap / architecture / phase docs.
 # Visible to me locally, never published to the repo.
 .roadmap/
+
+# Local end-to-end test fixtures — a seeded DB (+ vellum config) per engine for
+# manual testing against `cargo install --path .`. Never published.
+.bdd-test/
