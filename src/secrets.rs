@@ -20,7 +20,7 @@ use std::sync::Mutex;
 
 pub use secrecy::{ExposeSecret, SecretString};
 
-use crate::error::Result;
+use crate::error::{Result, VellumError};
 
 /// Store / fetch / delete a connection's password. The key is the connection
 /// name; implementations namespace it (the keyring backend will key it as
@@ -92,21 +92,33 @@ pub fn env_var_name(connection: &str) -> String {
 
 /// Resolve a connection's credential: a `VELLUM_DSN_<NAME>` override wins,
 /// otherwise the password held by `store`. `None` if neither is configured.
+///
+/// A `VELLUM_DSN_<NAME>` that is *set but not valid UTF-8* is an error, not a
+/// silent fall-through to the store — an override must not quietly swap the
+/// credential source. The error never echoes the (unreadable) value.
 pub fn resolve(connection: &str, store: &dyn SecretStore) -> Result<Option<Credential>> {
-  resolve_with(connection, store, |key| std::env::var(key).ok())
+  resolve_with(connection, store, |key| match std::env::var(key) {
+    Ok(value) => Ok(Some(value)),
+    Err(std::env::VarError::NotPresent) => Ok(None),
+    Err(std::env::VarError::NotUnicode(_)) => Err(VellumError::Secret(format!(
+      "`{key}` is set but is not valid UTF-8 — fix or unset it"
+    ))),
+  })
 }
 
 /// [`resolve`] with the environment lookup injected. This is the seam tests
 /// drive: they pin the precedence deterministically without mutating the
 /// process environment (a write that races parallel readers — the same
 /// global-state hazard that pushed the keyring impl behind this port). `env`
-/// maps an env var name to its value, mirroring `std::env::var(..).ok()`.
+/// maps an env var name to its value (`Ok(None)` when unset), and may report a
+/// present-but-unreadable override as an error — which [`resolve`] surfaces
+/// rather than falling back to the store.
 pub fn resolve_with(
   connection: &str,
   store: &dyn SecretStore,
-  env: impl Fn(&str) -> Option<String>,
+  env: impl Fn(&str) -> Result<Option<String>>,
 ) -> Result<Option<Credential>> {
-  if let Some(dsn) = env(&env_var_name(connection)) {
+  if let Some(dsn) = env(&env_var_name(connection)).ok().flatten() {
     return Ok(Some(Credential::Dsn(SecretString::from(dsn))));
   }
   Ok(store.get(connection)?.map(Credential::Password))
