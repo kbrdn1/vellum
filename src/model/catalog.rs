@@ -79,36 +79,36 @@ pub struct Reference {
 
 impl Catalog {
   /// The database with this name, if present.
-  pub fn database(&self, _name: &str) -> Option<&Database> {
-    // stub — navigation is pinned by the red test first
-    None
+  pub fn database(&self, name: &str) -> Option<&Database> {
+    self.databases.iter().find(|d| d.name == name)
   }
 }
 
 impl Database {
   /// The schema with this name, if present.
-  pub fn schema(&self, _name: &str) -> Option<&Schema> {
-    None
+  pub fn schema(&self, name: &str) -> Option<&Schema> {
+    self.schemas.iter().find(|s| s.name == name)
   }
 
   /// Resolve a foreign key declared in `from_schema` to the relation it
   /// references — following `references.schema` when set, else staying in
   /// `from_schema`. `None` if the target schema or relation is absent.
   pub fn resolve(&self, _fk: &ForeignKey, _from_schema: &str) -> Option<&Relation> {
+    // stub — FK resolution is pinned by its own red test next
     None
   }
 }
 
 impl Schema {
   /// The relation with this name, if present.
-  pub fn relation(&self, _name: &str) -> Option<&Relation> {
-    None
+  pub fn relation(&self, name: &str) -> Option<&Relation> {
+    self.relations.iter().find(|r| r.name == name)
   }
 }
 
 impl Relation {
   /// The column with this name, if present.
-  pub fn column(&self, _name: &str) -> Option<&Column> {
-    None
+  pub fn column(&self, name: &str) -> Option<&Column> {
+    self.columns.iter().find(|c| c.name == name)
   }
 }
