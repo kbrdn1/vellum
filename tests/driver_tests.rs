@@ -376,3 +376,39 @@ async fn sqlite_introspection_keeps_user_tables_prefixed_like_sqlite() {
     "a user table named like `sqlite...` (no literal `sqlite_`) must not be dropped"
   );
 }
+
+#[tokio::test]
+async fn sqlite_introspection_includes_generated_columns() {
+  // `pragma_table_info` omits generated columns, but a FK can reference one —
+  // so the catalog must list them (`pragma_table_xinfo`). Internal hidden
+  // columns stay excluded.
+  let file = NamedTempFile::new().expect("create temp db file");
+  let dsn = format!("sqlite:{}", file.path().display());
+  let setup = SqlitePool::connect_with(
+    SqliteConnectOptions::from_str(&dsn)
+      .expect("parse dsn")
+      .create_if_missing(true),
+  )
+  .await
+  .expect("open writable connection for seeding");
+  setup
+    .execute("create table widget (w integer, h integer, area integer generated always as (w * h) stored)")
+    .await
+    .expect("seed a table with a generated column");
+  setup.close().await;
+  let driver = SqliteDriver::connect(&dsn).await.expect("connect read-only");
+
+  let catalog = driver.introspect().await.expect("introspect the schema");
+  let widget = catalog
+    .database("main")
+    .unwrap()
+    .schema("main")
+    .unwrap()
+    .relation("widget")
+    .expect("relation `widget`");
+  let names: Vec<&str> = widget.columns.iter().map(|c| c.name.as_str()).collect();
+  assert!(
+    names.contains(&"area"),
+    "the generated column `area` must be listed, got {names:?}"
+  );
+}
