@@ -128,3 +128,50 @@ fn rejects_a_plaintext_password() {
     "message should point at the keyring: {message}"
   );
 }
+
+#[test]
+fn rejects_a_non_string_password() {
+  // "Refused on presence" must not depend on the secret's TOML type — a
+  // non-string `password` (here an integer; tables / dotted keys are the same
+  // class) must still hit the keyring gate, not fall through to a generic
+  // type error that may echo the value.
+  let toml = r#"
+    [connections.leaky]
+    backend  = "postgres"
+    password = 12345
+  "#;
+
+  let err = Config::from_toml_str(toml).expect_err("a non-string password must be refused");
+  let VellumError::Config(message) = err else {
+    panic!("expected VellumError::Config, got {err:?}");
+  };
+  let lower = message.to_lowercase();
+  assert!(
+    lower.contains("password") && lower.contains("keyring"),
+    "should hit the keyring gate, not a generic type error: {message}"
+  );
+  // And never echo the secret value back.
+  assert!(
+    !message.contains("12345"),
+    "the error must not reflect the secret value: {message}"
+  );
+}
+
+#[test]
+fn parsed_connection_carries_no_password_surface() {
+  // Safe by construction: the public `Connection` has no `password` field at
+  // all, so its derived `Debug` cannot leak one and there is no field for a
+  // direct-deserialise bypass to populate.
+  let toml = r#"
+    [connections.c]
+    backend = "postgres"
+    host    = "localhost"
+  "#;
+
+  let config = Config::from_toml_str(toml).expect("valid file should parse");
+  let rendered = format!("{:?}", config.connections["c"]);
+  assert!(
+    !rendered.to_lowercase().contains("password"),
+    "public Connection must carry no password surface: {rendered}"
+  );
+}
