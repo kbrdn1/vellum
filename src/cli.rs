@@ -5,6 +5,8 @@
 //! instead (vim navigation, `q` to quit). `run` is `async` because the driver
 //! layer it dispatches to is async on the tokio runtime bootstrapped in `main`.
 
+use std::io::IsTerminal;
+
 use clap::Parser;
 
 use crate::driver::{Driver, SqliteDriver};
@@ -51,6 +53,7 @@ pub async fn run(cli: Cli) -> Result<()> {
       let driver = SqliteDriver::open_readonly(&db).await?;
       let result = driver.query(&sql).await?;
       if interactive {
+        require_terminal()?;
         tui::run(result)
       } else {
         print_result(&result)
@@ -59,6 +62,7 @@ pub async fn run(cli: Cli) -> Result<()> {
     // `--db` with no query opens the interactive browse UI: introspect the
     // schema, then navigate it and page through tables live (read-only).
     (Some(db), None) => {
+      require_terminal()?;
       let driver = SqliteDriver::open_readonly(&db).await?;
       let catalog = driver.introspect().await?;
       let app = App::browse(catalog, driver.capabilities());
@@ -77,6 +81,22 @@ pub async fn run(cli: Cli) -> Result<()> {
       );
       Ok(())
     }
+  }
+}
+
+/// Refuse to launch a full-screen TUI when stdout is not a terminal (piped,
+/// redirected, or a CI runner). `ratatui::try_init` does not fail fast on every
+/// platform — on Windows under a pipe it can leave `event::read` blocking
+/// forever — so we gate up front and fail cleanly instead of hanging.
+fn require_terminal() -> Result<()> {
+  if std::io::stdout().is_terminal() {
+    Ok(())
+  } else {
+    Err(VellumError::Arg(
+      "this view needs an interactive terminal; pipe a query instead, e.g. \
+`vellum --db data.sqlite \"select * from t\"`"
+        .to_string(),
+    ))
   }
 }
 
