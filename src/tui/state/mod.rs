@@ -5,4 +5,5 @@
 pub mod editor;
 pub mod paginate;
 pub mod sidebar;
+pub mod sort;
 pub mod table;
