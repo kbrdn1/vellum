@@ -139,9 +139,12 @@ impl PostgresDriver {
       .map_err(driver_err)?;
 
     let schema_rows = sqlx::query(
+      // `pg\_%` (escaped `_`) excludes only the *literal* reserved `pg_` prefix
+      // (pg_catalog, pg_toast, pg_temp_*). A bare `pg_%` would treat `_` as a
+      // wildcard and also drop legal user schemas like `pgx` or `pgapp`.
       "SELECT schema_name FROM information_schema.schemata \
        WHERE schema_name NOT IN ('pg_catalog', 'information_schema') \
-         AND schema_name NOT LIKE 'pg_%' ORDER BY schema_name",
+         AND schema_name NOT LIKE 'pg\\_%' ESCAPE '\\' ORDER BY schema_name",
     )
     .fetch_all(&self.pool)
     .await

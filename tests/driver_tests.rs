@@ -762,6 +762,30 @@ mod postgres_it {
     let target = db.resolve(fk, "it_vellum").expect("the FK resolves");
     assert_eq!(target.name, "users");
   }
+
+  #[tokio::test]
+  async fn pg_introspection_keeps_user_schemas_prefixed_like_pg() {
+    // `pgx` matches a wildcard `pg_%` (the `_` is a LIKE wildcard) but is NOT a
+    // reserved `pg_` schema — it must survive (the exclusion escapes the `_`).
+    let pool = seed_pool().await;
+    pool
+      .execute("drop schema if exists pgx cascade")
+      .await
+      .expect("drop schema");
+    pool.execute("create schema pgx").await.expect("create schema");
+    pool
+      .execute("create table pgx.t (id int primary key)")
+      .await
+      .expect("create table");
+
+    let driver = PostgresDriver::connect(&dsn()).await.expect("connect read-only");
+    let catalog = driver.introspect().await.expect("introspect the schema");
+    let db = catalog.databases.first().expect("one database");
+    assert!(
+      db.schema("pgx").is_some(),
+      "a user schema named like `pg...` (no literal `pg_`) must not be dropped"
+    );
+  }
 }
 
 /// MySQL integration tests — behind the `it-db` feature (default `cargo test`
@@ -962,6 +986,34 @@ mod mysql_it {
         schemas: false,
         foreign_keys: true,
       }
+    );
+  }
+
+  #[tokio::test]
+  async fn mysql_time_column_maps_to_a_marker_not_a_crash() {
+    // MySQL `TIME` is a duration (here `838:59:59`, past wall-clock midnight),
+    // which a `time::Time` decode can't hold — it must map to the conservative
+    // marker, never fail the whole query.
+    let pool = seed_pool().await;
+    pool.execute("drop table if exists it_time").await.expect("drop");
+    pool
+      .execute("create table it_time (d time)")
+      .await
+      .expect("create table");
+    pool
+      .execute("insert into it_time values ('838:59:59')")
+      .await
+      .expect("seed an out-of-wall-clock TIME");
+
+    let driver = MySqlDriver::connect(&dsn()).await.expect("connect read-only");
+    let result = driver
+      .query("select d from it_time")
+      .await
+      .expect("query must not fail on TIME");
+    assert!(
+      matches!(&result.rows[0][0], Value::Text(s) if s.starts_with('<')),
+      "TIME → conservative marker, got {:?}",
+      result.rows[0][0]
     );
   }
 }

@@ -28,14 +28,16 @@ use crate::model::{Backend, Catalog, QueryResult};
 /// read-only query before it reaches the database. The `dialect` is the
 /// engine's own so the parse matches what the server would accept.
 ///
-/// This is the **primary** write-safety boundary, but it is *necessary, not
-/// sufficient*: Postgres allows data-modifying CTEs
+/// This is the **primary** write-safety boundary, and it also refuses
+/// `SELECT … INTO` (a table or file write that wears a `Query`'s clothes, found
+/// anywhere in the set expression). But it is *necessary, not sufficient*:
+/// Postgres allows data-modifying CTEs
 /// (`WITH t AS (INSERT … RETURNING *) SELECT * FROM t`) whose top level parses
 /// as a `Query` yet still writes. Each impl pairs this with an engine-level
-/// backstop (SQLite opens `SQLITE_OPEN_READONLY`; Postgres runs the session
-/// `default_transaction_read_only = on`) so a write that slips past the parser
-/// is still refused. Intentional writes go through the gated write/diff path
-/// (#64).
+/// backstop (SQLite opens `SQLITE_OPEN_READONLY`; Postgres wraps every query in
+/// a `READ ONLY` transaction; MySQL sets the session `transaction_read_only`),
+/// so a write that slips past the parser is still refused. Intentional writes
+/// go through the gated write/diff path (#64).
 pub(crate) fn ensure_single_read_query(dialect: &dyn Dialect, sql: &str) -> Result<()> {
   // Fail closed: run only what we can verify is one read-only statement.
   // Unparsed input is refused, never handed to the database.
@@ -67,13 +69,24 @@ pub(crate) fn ensure_single_read_query(dialect: &dyn Dialect, sql: &str) -> Resu
   }
 }
 
-/// Whether a parsed `Query` carries a `SELECT … INTO` clause — a write that
-/// looks like a read. `INTO <table>` materialises a table (Postgres
-/// `CREATE TABLE AS`); `INTO OUTFILE`/`DUMPFILE` writes a file (MySQL) that a
-/// READ ONLY transaction does not stop. The clause is only valid at the top
-/// level of a `SELECT`, so the outer body is the only place to look.
+/// Whether a parsed `Query` carries a `SELECT … INTO` clause anywhere in its
+/// set expression — a write that looks like a read. `INTO <table>` materialises
+/// a table (Postgres `CREATE TABLE AS`); `INTO OUTFILE`/`DUMPFILE` writes a file
+/// (MySQL) that a READ ONLY transaction does not stop. The clause can sit on a
+/// branch of a `UNION`/`INTERSECT`/`EXCEPT` (a `SetOperation`) or inside a
+/// parenthesised subquery, not only at the top level — so the whole tree is
+/// walked, not just the outer body.
 fn query_writes_via_into(query: &Query) -> bool {
-  matches!(&*query.body, SetExpr::Select(select) if select.into.is_some())
+  set_expr_writes_via_into(&query.body)
+}
+
+fn set_expr_writes_via_into(expr: &SetExpr) -> bool {
+  match expr {
+    SetExpr::Select(select) => select.into.is_some(),
+    SetExpr::Query(query) => set_expr_writes_via_into(&query.body),
+    SetExpr::SetOperation { left, right, .. } => set_expr_writes_via_into(left) || set_expr_writes_via_into(right),
+    _ => false,
+  }
 }
 
 /// What a backend supports, so the UI can gate features per engine (the sidebar
@@ -174,6 +187,28 @@ mod tests {
     assert!(
       ensure_single_read_query(&PostgreSqlDialect {}, "SELECT 1 INTO foo").is_err(),
       "SELECT … INTO <table> must be refused"
+    );
+  }
+
+  #[test]
+  fn refuses_into_outfile_buried_in_a_union() {
+    // The `INTO` sits on a branch of a `UNION` (the body is a `SetOperation`,
+    // not a bare `Select`), so the guard must walk the set expression — a
+    // top-level-only check would let this file write through.
+    assert!(
+      ensure_single_read_query(&MySqlDialect {}, "SELECT 1 UNION SELECT 2 INTO OUTFILE '/tmp/x'").is_err(),
+      "UNION … INTO OUTFILE must be refused"
+    );
+    // Same, nested in a parenthesised subquery.
+    assert!(
+      ensure_single_read_query(&MySqlDialect {}, "(SELECT 1 INTO OUTFILE '/tmp/x')").is_err(),
+      "a parenthesised SELECT … INTO OUTFILE must be refused"
+    );
+    // Postgres `SELECT … INTO <table>` inside a UNION — `CREATE TABLE AS` on a
+    // set-operation branch.
+    assert!(
+      ensure_single_read_query(&PostgreSqlDialect {}, "SELECT 1 AS a UNION SELECT 2 INTO foo").is_err(),
+      "UNION … INTO <table> must be refused"
     );
   }
 }

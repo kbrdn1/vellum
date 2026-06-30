@@ -287,13 +287,13 @@ fn mysql_value_at(row: &MySqlRow, i: usize) -> Result<Value> {
       let t: sqlx::types::time::Date = row.try_get(i).map_err(driver_err)?;
       Value::Timestamp(t.to_string())
     }
-    "TIME" => {
-      let t: sqlx::types::time::Time = row.try_get(i).map_err(driver_err)?;
-      Value::Timestamp(t.to_string())
-    }
+    // `TIME` is a *duration* in MySQL (negative, or up to `838:59:59`), not a
+    // wall-clock time — `time::Time` can't hold those and would fail the whole
+    // query. It joins the conservative marker tail until a faithful decode
+    // (#76).
     // Conservative non-data marker — honest about not decoding this type yet
-    // (decimal, unsigned 64-bit, bit, year, geometry, …). Faithful decode is
-    // #76. Never a faked value.
+    // (TIME, decimal, unsigned 64-bit, bit, year, geometry, …). Faithful decode
+    // is #76. Never a faked value.
     _ => Value::Text(format!("<{}>", type_name.to_lowercase())),
   };
   Ok(value)
@@ -308,7 +308,8 @@ fn typekind_from_mysql(name: &str) -> TypeKind {
     "VARCHAR" | "CHAR" | "TEXT" | "TINYTEXT" | "MEDIUMTEXT" | "LONGTEXT" | "ENUM" | "SET" => TypeKind::Text,
     "BLOB" | "TINYBLOB" | "MEDIUMBLOB" | "LONGBLOB" | "BINARY" | "VARBINARY" => TypeKind::Bytes,
     "JSON" => TypeKind::Json,
-    "DATETIME" | "TIMESTAMP" | "DATE" | "TIME" => TypeKind::Timestamp,
+    // `TIME` is a duration (conservative marker, see `mysql_value_at`).
+    "DATETIME" | "TIMESTAMP" | "DATE" => TypeKind::Timestamp,
     _ => TypeKind::Text,
   }
 }
