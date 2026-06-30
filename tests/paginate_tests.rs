@@ -80,6 +80,14 @@ fn prev_saturates_at_the_first_page() {
 }
 
 #[test]
+fn cursor_arithmetic_saturates_instead_of_overflowing() {
+  // A pathological page size must not overflow the LIMIT (`page_size + 1`).
+  let p = Paginator::new(usize::MAX);
+  assert_eq!(p.limit(), usize::MAX, "limit saturates rather than wrapping to 0");
+  assert_eq!(p.offset(), 0);
+}
+
+#[test]
 fn prev_returns_to_the_previous_page() {
   let mut p = Paginator::new(50);
   p.record(51);

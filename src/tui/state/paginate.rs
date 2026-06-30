@@ -51,14 +51,17 @@ impl Paginator {
   }
 
   /// The `LIMIT` to fetch: one past the page, so the extra row probes for a
-  /// next page without a `COUNT`.
+  /// next page without a `COUNT`. Saturating: a pathological `page_size` can't
+  /// overflow the cursor (page sizes are small viewport heights in practice).
   pub fn limit(&self) -> usize {
-    self.page_size + 1
+    self.page_size.saturating_add(1)
   }
 
-  /// The `OFFSET` of the current page's first row.
+  /// The `OFFSET` of the current page's first row (saturating, see [`limit`]).
+  ///
+  /// [`limit`]: Paginator::limit
   pub fn offset(&self) -> usize {
-    self.page * self.page_size
+    self.page.saturating_mul(self.page_size)
   }
 
   /// Record how many rows the runtime fetched for the current page (clamped to
@@ -110,8 +113,8 @@ impl Paginator {
     if visible == 0 {
       return "no rows".to_string();
     }
-    let start = self.offset() + 1;
-    let end = self.offset() + visible;
+    let start = self.offset().saturating_add(1);
+    let end = self.offset().saturating_add(visible);
     format!("rows {start}-{end}")
   }
 }

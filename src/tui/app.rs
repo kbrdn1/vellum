@@ -121,6 +121,15 @@ impl App {
     }
   }
 
+  /// Open a relation picked in the sidebar: record the intent for the loader to
+  /// fetch, and **restart pagination from page 0** — a freshly-opened relation
+  /// must not inherit the previous one's page offset or a stale page request.
+  fn open_relation(&mut self, relation: RelationRef) {
+    self.browse_intent = Some(relation);
+    self.paginator = Some(Paginator::new(DEFAULT_PAGE_SIZE));
+    self.page_request = None;
+  }
+
   /// Move the browse cursor a page if that page exists, recording the request
   /// for the runtime to fetch. No-op in one-shot mode or at a boundary.
   fn request_page(&mut self, request: PageRequest) {
@@ -152,8 +161,11 @@ impl App {
       }
       _ => match self.focus {
         Focus::Sidebar => {
-          if let Some(sidebar) = self.sidebar.as_mut() {
-            on_sidebar_key(sidebar, key, &mut self.browse_intent);
+          // Resolve the opened relation (if any) before touching `self` again —
+          // the sidebar borrow must end before `open_relation` takes `&mut self`.
+          let opened = self.sidebar.as_mut().and_then(|sidebar| on_sidebar_key(sidebar, key));
+          if let Some(relation) = opened {
+            self.open_relation(relation);
           }
         }
         // In the table pane, `n`/`p` page the browse cursor; everything else is
@@ -183,18 +195,22 @@ fn on_table_key(table: &mut TableState, key: char) {
 }
 
 /// Sidebar keys: `j`/`k`/`g`/`G` navigate; Space expands/collapses the selected
-/// node; Enter opens the selected relation (or toggles a database/schema).
-fn on_sidebar_key(sidebar: &mut SidebarState, key: char, intent: &mut Option<RelationRef>) {
+/// node; Enter opens the selected relation — returned to the caller so it can
+/// reset pagination — or, on a database/schema, toggles it.
+fn on_sidebar_key(sidebar: &mut SidebarState, key: char) -> Option<RelationRef> {
   match key {
     'j' => sidebar.select_next(),
     'k' => sidebar.select_prev(),
     'g' => sidebar.select_first(),
     'G' => sidebar.select_last(),
     ' ' => sidebar.toggle(),
-    '\n' | '\r' => match sidebar.selected_relation() {
-      Some(relation) => *intent = Some(relation),
-      None => sidebar.toggle(),
-    },
+    '\n' | '\r' => {
+      if let Some(relation) = sidebar.selected_relation() {
+        return Some(relation);
+      }
+      sidebar.toggle();
+    }
     _ => {}
   }
+  None
 }

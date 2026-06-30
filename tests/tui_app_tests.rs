@@ -425,6 +425,58 @@ fn n_and_p_do_nothing_until_the_table_is_focused() {
 }
 
 #[test]
+fn opening_another_relation_restarts_pagination() {
+  let mut app = App::browse(catalog(), caps(false));
+  app.on_key(' '); // [app, users, orders], cursor on the database
+  app.on_key('j'); // onto `users`
+  app.on_key('\n'); // open `users`
+  app.take_browse_intent();
+  app.on_key('\t'); // focus the table pane
+  app.apply_page(grid(2, 51)); // users page 0 (has a next)
+  app.on_key('n'); // request users page 1
+  app.take_page_request();
+  app.apply_page(grid(2, 20)); // users page 1
+  assert_eq!(
+    app.page_counter().as_deref(),
+    Some("rows 51-70"),
+    "paginated into users"
+  );
+
+  // Open a different relation: pagination must restart from page 0, not inherit
+  // the old offset.
+  app.on_key('\t'); // back to the sidebar (cursor still on `users`)
+  app.on_key('j'); // onto `orders`
+  app.on_key('\n'); // open `orders`
+  app.take_browse_intent();
+  app.on_key('\t'); // focus the table
+  app.apply_page(grid(2, 10)); // orders page 0
+  assert_eq!(
+    app.page_counter().as_deref(),
+    Some("rows 1-10"),
+    "a freshly-opened relation starts at page 0, not the previous offset"
+  );
+}
+
+#[test]
+fn opening_a_relation_drops_a_pending_page_request() {
+  let mut app = App::browse(catalog(), caps(false));
+  app.on_key(' ');
+  app.on_key('j'); // users
+  app.on_key('\n');
+  app.take_browse_intent();
+  app.on_key('\t');
+  app.apply_page(grid(2, 51));
+  app.on_key('n'); // page request set but NOT consumed
+  app.on_key('\t'); // back to sidebar
+  app.on_key('j'); // orders
+  app.on_key('\n'); // opening a relation must clear the stale request
+  assert!(
+    app.take_page_request().is_none(),
+    "a stale page request from the previous relation is dropped"
+  );
+}
+
+#[test]
 fn one_shot_mode_has_no_pagination() {
   let mut app = App::new(grid(2, 3));
   assert_eq!(app.page_counter(), None, "one-shot has no paginator");
