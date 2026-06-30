@@ -44,7 +44,21 @@ pub struct App {
   run_query: Option<String>,
   sort: Option<Sort>,
   requery: bool,
+  current_relation: Option<RelationRef>,
   quit: bool,
+}
+
+/// What the runtime should fetch for the browse table, derived entirely from
+/// `App` state by [`App::take_page_target`]: the open relation, the page bounds,
+/// and the (optional) sort clause. The runtime turns this into a single
+/// read-only `SELECT … LIMIT/OFFSET` and feeds the rows back via
+/// [`App::apply_page`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PageTarget {
+  pub relation: RelationRef,
+  pub limit: usize,
+  pub offset: usize,
+  pub order_by: Option<String>,
 }
 
 impl App {
@@ -62,6 +76,7 @@ impl App {
       run_query: None,
       sort: None,
       requery: false,
+      current_relation: None,
       quit: false,
     }
   }
@@ -86,6 +101,7 @@ impl App {
       run_query: None,
       sort: None,
       requery: false,
+      current_relation: None,
       quit: false,
     }
   }
@@ -110,6 +126,7 @@ impl App {
       run_query: None,
       sort: None,
       requery: false,
+      current_relation: None,
       quit: false,
     }
   }
@@ -199,11 +216,34 @@ impl App {
   /// must not inherit the previous one's page offset, page request, or sort
   /// (its columns differ).
   fn open_relation(&mut self, relation: RelationRef) {
+    self.current_relation = Some(relation.clone());
     self.browse_intent = Some(relation);
     self.paginator = Some(Paginator::new(DEFAULT_PAGE_SIZE));
     self.page_request = None;
     self.sort = None;
     self.requery = false;
+  }
+
+  /// Drain any pending browse fetch — a relation just opened, a page just moved,
+  /// or the sort just changed — and return what to fetch, derived from `App`
+  /// state. Returns `None` when nothing is pending (or before a relation is
+  /// open). Keeping the priority/staleness logic here keeps it in the
+  /// unit-tested layer; the runtime stays a thin `query → apply_page`.
+  pub fn take_page_target(&mut self) -> Option<PageTarget> {
+    let opened = self.browse_intent.take().is_some();
+    let paged = self.page_request.take().is_some();
+    let resorted = std::mem::take(&mut self.requery);
+    if !(opened || paged || resorted) {
+      return None;
+    }
+    let relation = self.current_relation.clone()?;
+    let paginator = self.paginator.as_ref()?;
+    Some(PageTarget {
+      relation,
+      limit: paginator.limit(),
+      offset: paginator.offset(),
+      order_by: self.sort.as_ref().map(Sort::order_by_clause),
+    })
   }
 
   /// Toggle the server-side sort on the column under the horizontal cursor

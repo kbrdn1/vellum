@@ -66,13 +66,18 @@ fn one_shot_rejected_write_exits_one() {
 }
 
 #[test]
-fn db_without_query_is_a_usage_error() {
-  // `--db` alone has nothing to run; it is a usage error (exit non-zero), not
-  // a silent no-op.
+fn db_without_query_launches_browse_which_needs_a_terminal() {
+  // `--db` alone opens the interactive browse UI. Under assert_cmd stdout is a
+  // pipe, so the up-front terminal guard refuses cleanly (exit non-zero) — it
+  // must NOT block on a key read (the `ratatui::try_init` failure mode is not
+  // fast on every platform; the guard is what makes this deterministic).
   let db = common::seeded_db();
   let mut cmd = Command::cargo_bin("vellum").unwrap();
   cmd.arg("--db").arg(db.path());
-  cmd.assert().failure();
+  cmd
+    .assert()
+    .failure()
+    .stderr(predicate::str::contains("needs an interactive terminal"));
 }
 
 #[test]
@@ -82,6 +87,23 @@ fn interactive_without_db_is_a_usage_error() {
   let mut cmd = Command::cargo_bin("vellum").unwrap();
   cmd.arg("--interactive");
   cmd.assert().failure();
+}
+
+#[test]
+fn interactive_refuses_without_a_terminal_before_touching_the_db() {
+  // `-i` must hit the terminal guard up front — not open the database and run
+  // the query first. A non-existent path proves the order: a guard *before* the
+  // open yields the terminal error, a guard *after* would yield a driver error.
+  let mut cmd = Command::cargo_bin("vellum").unwrap();
+  cmd
+    .arg("--db")
+    .arg("/nonexistent/vellum-does-not-exist.sqlite")
+    .arg("select 1")
+    .arg("-i");
+  cmd
+    .assert()
+    .failure()
+    .stderr(predicate::str::contains("needs an interactive terminal"));
 }
 
 /// Seed a one-row `items` table at `path` for the DSN-encoding tests.

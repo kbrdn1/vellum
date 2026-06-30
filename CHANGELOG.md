@@ -15,6 +15,22 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Phase 1 — browse runtime, the UI goes live (#83):** the browse pure-state
+  (#14 sidebar, #15 pagination, #19 sort) is now **reachable and rendered**.
+  `vellum --db <FILE>` (no SQL) connects SQLite, introspects the schema, and
+  opens a two-pane browse UI — an indented, navigable schema sidebar and a result
+  table over a status line (row counter, active sort, key hints) — fetching each
+  page live as you navigate. `App` persists the open relation behind a single
+  unit-tested `take_page_target()` that derives the whole fetch (relation,
+  LIMIT/OFFSET, ORDER BY) from state, keeping the priority/staleness logic in the
+  tested layer; the runtime stays a thin `query → apply_page`. The pure
+  `page_sql` builds the read-only `SELECT * FROM "schema"."relation" [ORDER BY …]
+  LIMIT n OFFSET m` (identifiers double-quoted, embedded quotes doubled), and
+  `key_action` maps Enter → open-relation and Tab → focus-toggle. The terminal is
+  restored on the fetch-error path. Editor/query-mode render + run, per-dialect
+  identifier quoting (MySQL backticks), Postgres/MySQL browse entry, and a
+  query-time error surfaced in the status line (instead of ending the session)
+  are follow-ups.
 - **Phase 1 — column sort on browse (#19):** a pure, ratatui-free `Sort` +
   `toggle_sort` (`tui/state/sort.rs`) — one column at a time, tri-state
   (ascending → descending → off), rendering an `ORDER BY "col" ASC|DESC` clause

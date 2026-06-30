@@ -5,12 +5,15 @@
 //! instead (vim navigation, `q` to quit). `run` is `async` because the driver
 //! layer it dispatches to is async on the tokio runtime bootstrapped in `main`.
 
+use std::io::IsTerminal;
+
 use clap::Parser;
 
 use crate::driver::{Driver, SqliteDriver};
 use crate::error::{Result, VellumError};
 use crate::model::QueryResult;
 use crate::tui;
+use crate::tui::app::App;
 
 #[derive(Debug, Parser)]
 #[command(
@@ -47,6 +50,11 @@ pub async fn run(cli: Cli) -> Result<()> {
     (Some(db), Some(sql)) => {
       // Open by path (not a DSN string) so the literal file named is queried —
       // see `SqliteDriver::open_readonly`.
+      // For `-i`, refuse a non-terminal before doing any work — no point opening
+      // the database or running the query if the result can't be rendered.
+      if interactive {
+        require_terminal()?;
+      }
       let driver = SqliteDriver::open_readonly(&db).await?;
       let result = driver.query(&sql).await?;
       if interactive {
@@ -55,9 +63,15 @@ pub async fn run(cli: Cli) -> Result<()> {
         print_result(&result)
       }
     }
-    (Some(_), None) => Err(VellumError::Arg(
-      "a SQL query is required with --db, e.g. `vellum --db data.sqlite \"select * from t\"`".to_string(),
-    )),
+    // `--db` with no query opens the interactive browse UI: introspect the
+    // schema, then navigate it and page through tables live (read-only).
+    (Some(db), None) => {
+      require_terminal()?;
+      let driver = SqliteDriver::open_readonly(&db).await?;
+      let catalog = driver.introspect().await?;
+      let app = App::browse(catalog, driver.capabilities());
+      tui::browse(driver, app).await
+    }
     (None, Some(_)) => Err(VellumError::Arg("--db <FILE> is required to run a query".to_string())),
     // `--interactive` without a database/query is a usage error, not a silent
     // banner: the user asked to open something that isn't there.
@@ -67,10 +81,26 @@ pub async fn run(cli: Cli) -> Result<()> {
     (None, None) => {
       println!(
         "vellum — pass `--db <FILE> \"<SQL>\"` to run a query (add `-i` for the TUI), \
-or `--help` for usage."
+`--db <FILE>` alone to browse the schema, or `--help` for usage."
       );
       Ok(())
     }
+  }
+}
+
+/// Refuse to launch a full-screen TUI when stdout is not a terminal (piped,
+/// redirected, or a CI runner). `ratatui::try_init` does not fail fast on every
+/// platform — on Windows under a pipe it can leave `event::read` blocking
+/// forever — so we gate up front and fail cleanly instead of hanging.
+fn require_terminal() -> Result<()> {
+  if std::io::stdout().is_terminal() {
+    Ok(())
+  } else {
+    Err(VellumError::Arg(
+      "this view needs an interactive terminal; pipe a query instead, e.g. \
+`vellum --db data.sqlite \"select * from t\"`"
+        .to_string(),
+    ))
   }
 }
 
