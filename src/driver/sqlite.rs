@@ -11,11 +11,9 @@ use sqlx::sqlite::{SqliteConnectOptions, SqliteConnection, SqlitePool, SqliteRow
 // `Column` / `Row` types.
 use sqlx::{Column as _, Executor as _, Row as _, TypeInfo as _, ValueRef as _};
 
-use sqlparser::ast::Statement;
 use sqlparser::dialect::SQLiteDialect;
-use sqlparser::parser::Parser;
 
-use crate::driver::Driver;
+use crate::driver::{ensure_single_read_query, Driver};
 use crate::error::{Result, VellumError};
 // `catalog` is module-qualified so its `Column` doesn't clash with the result
 // `Column` imported flat below.
@@ -212,7 +210,9 @@ impl Driver for SqliteDriver {
   }
 
   async fn query(&self, sql: &str) -> Result<QueryResult> {
-    ensure_read_only_query(sql)?;
+    // SQLite has no data-modifying CTEs, so the single-`Query` parser guard is
+    // exact here; the read-only file handle (`connect`) is the backstop.
+    ensure_single_read_query(&SQLiteDialect {}, sql)?;
     let raw_rows = sqlx::query(sql).fetch_all(&self.pool).await.map_err(driver_err)?;
 
     // Map every cell first — the runtime value type is the single reliable
@@ -289,37 +289,6 @@ impl SqliteDriver {
           .collect()
       }),
     })
-  }
-}
-
-/// Guard the read path: reject anything that isn't a single read-only query
-/// before it reaches the database. This is the primary write-safety boundary
-/// (the read-only connection is a backstop): writes (DML/DDL, `CREATE TEMP`),
-/// multi-statement payloads, and input sqlparser can't parse are all refused,
-/// so they never run outside the gated write/diff path (#64).
-fn ensure_read_only_query(sql: &str) -> Result<()> {
-  // Fail closed: the read path runs only what it can verify is a single
-  // read-only query. Anything sqlparser can't parse — or that parses as a
-  // write or as multiple statements — is refused rather than handed to the
-  // database. Allowing unparsed SQL through is unsafe: some statements write
-  // even on a read-only handle (e.g. `VACUUM INTO 'file'` copies the db to
-  // disk), and an unparsed chain could smuggle a write past a one-statement
-  // check. Intentional writes go through the gated write/diff path (#64).
-  let statements = Parser::parse_sql(&SQLiteDialect {}, sql)
-    .map_err(|e| VellumError::Driver(format!("read-only path: could not parse SQL ({e})")))?;
-  match statements.as_slice() {
-    // A single SELECT-style query (covers `WITH … SELECT`, `VALUES`, unions),
-    // or empty / comment-only input (harmless — let SQLite handle it).
-    [Statement::Query(_)] | [] => Ok(()),
-    [_] => Err(VellumError::Driver(
-      "read-only path: only SELECT-style queries run here; writes go through \
-       the write/diff gate"
-        .into(),
-    )),
-    stmts => Err(VellumError::Driver(format!(
-      "read-only path: exactly one statement is allowed, got {}",
-      stmts.len()
-    ))),
   }
 }
 

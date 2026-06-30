@@ -4,14 +4,53 @@
 //! ARCHITECTURE §4) in Phase 1, once Postgres is the second impl. No
 //! speculative abstraction now (YAGNI).
 
+pub mod postgres;
 pub mod sqlite;
 
+pub use postgres::PostgresDriver;
 pub use sqlite::SqliteDriver;
 
 use async_trait::async_trait;
 
-use crate::error::Result;
+use sqlparser::ast::Statement;
+use sqlparser::dialect::Dialect;
+use sqlparser::parser::Parser;
+
+use crate::error::{Result, VellumError};
 use crate::model::{Backend, QueryResult};
+
+/// Guard the read path for every backend: reject anything that isn't a single
+/// read-only query before it reaches the database. The `dialect` is the
+/// engine's own so the parse matches what the server would accept.
+///
+/// This is the **primary** write-safety boundary, but it is *necessary, not
+/// sufficient*: Postgres allows data-modifying CTEs
+/// (`WITH t AS (INSERT … RETURNING *) SELECT * FROM t`) whose top level parses
+/// as a `Query` yet still writes. Each impl pairs this with an engine-level
+/// backstop (SQLite opens `SQLITE_OPEN_READONLY`; Postgres runs the session
+/// `default_transaction_read_only = on`) so a write that slips past the parser
+/// is still refused. Intentional writes go through the gated write/diff path
+/// (#64).
+pub(crate) fn ensure_single_read_query(dialect: &dyn Dialect, sql: &str) -> Result<()> {
+  // Fail closed: run only what we can verify is one read-only statement.
+  // Unparsed input is refused, never handed to the database.
+  let statements = Parser::parse_sql(dialect, sql)
+    .map_err(|e| VellumError::Driver(format!("read-only path: could not parse SQL ({e})")))?;
+  match statements.as_slice() {
+    // A single SELECT-style query (covers `WITH … SELECT`, `VALUES`, unions),
+    // or empty / comment-only input (harmless).
+    [Statement::Query(_)] | [] => Ok(()),
+    [_] => Err(VellumError::Driver(
+      "read-only path: only SELECT-style queries run here; writes go through \
+       the write/diff gate"
+        .into(),
+    )),
+    stmts => Err(VellumError::Driver(format!(
+      "read-only path: exactly one statement is allowed, got {}",
+      stmts.len()
+    ))),
+  }
+}
 
 #[async_trait]
 pub trait Driver: Send + Sync {

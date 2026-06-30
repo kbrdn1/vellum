@@ -55,6 +55,37 @@ jobs:
       - name: cargo test
         run: cargo test --verbose
 
+  it-db:
+    name: it-db (postgres)
+    runs-on: ubuntu-latest
+    # The `it-db` feature gate runs the server-backed integration tests
+    # (#10 PostgreSQL). Kept out of the default `test` job so a plain
+    # `cargo test` needs no Docker; here a Postgres service backs them.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_DB: postgres
+          # Ephemeral CI service: trust auth — no password needed, and no
+          # credential-shaped literal lands in the repo. The DB dies with the job.
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo test --features it-db
+        run: cargo test --features it-db --verbose
+        env:
+          VELLUM_IT_PG_DSN: postgres://postgres@localhost:5432/postgres
+
   hook-smoke:
     name: pre-commit hook smoke
     runs-on: ubuntu-latest
