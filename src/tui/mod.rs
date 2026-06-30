@@ -9,4 +9,4 @@ pub mod runtime;
 pub mod state;
 pub mod view;
 
-pub use runtime::run;
+pub use runtime::{browse, run};

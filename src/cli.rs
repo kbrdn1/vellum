@@ -11,6 +11,7 @@ use crate::driver::{Driver, SqliteDriver};
 use crate::error::{Result, VellumError};
 use crate::model::QueryResult;
 use crate::tui;
+use crate::tui::app::App;
 
 #[derive(Debug, Parser)]
 #[command(
@@ -55,9 +56,14 @@ pub async fn run(cli: Cli) -> Result<()> {
         print_result(&result)
       }
     }
-    (Some(_), None) => Err(VellumError::Arg(
-      "a SQL query is required with --db, e.g. `vellum --db data.sqlite \"select * from t\"`".to_string(),
-    )),
+    // `--db` with no query opens the interactive browse UI: introspect the
+    // schema, then navigate it and page through tables live (read-only).
+    (Some(db), None) => {
+      let driver = SqliteDriver::open_readonly(&db).await?;
+      let catalog = driver.introspect().await?;
+      let app = App::browse(catalog, driver.capabilities());
+      tui::browse(driver, app).await
+    }
     (None, Some(_)) => Err(VellumError::Arg("--db <FILE> is required to run a query".to_string())),
     // `--interactive` without a database/query is a usage error, not a silent
     // banner: the user asked to open something that isn't there.
@@ -67,7 +73,7 @@ pub async fn run(cli: Cli) -> Result<()> {
     (None, None) => {
       println!(
         "vellum — pass `--db <FILE> \"<SQL>\"` to run a query (add `-i` for the TUI), \
-or `--help` for usage."
+`--db <FILE>` alone to browse the schema, or `--help` for usage."
       );
       Ok(())
     }

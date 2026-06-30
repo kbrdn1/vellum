@@ -66,9 +66,10 @@ fn one_shot_rejected_write_exits_one() {
 }
 
 #[test]
-fn db_without_query_is_a_usage_error() {
-  // `--db` alone has nothing to run; it is a usage error (exit non-zero), not
-  // a silent no-op.
+fn db_without_query_launches_browse_which_needs_a_terminal() {
+  // `--db` alone opens the interactive browse UI. Under assert_cmd there is no
+  // TTY, so `ratatui::try_init` fails and the binary exits non-zero — cleanly,
+  // without hanging on a key read.
   let db = common::seeded_db();
   let mut cmd = Command::cargo_bin("vellum").unwrap();
   cmd.arg("--db").arg(db.path());

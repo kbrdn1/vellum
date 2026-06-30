@@ -8,9 +8,10 @@
 
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind};
 
+use crate::driver::{Driver, SqliteDriver};
 use crate::error::Result;
 use crate::model::QueryResult;
-use crate::tui::app::App;
+use crate::tui::app::{App, PageTarget};
 use crate::tui::view;
 
 /// Launch the scrollable table UI over `result`. Enters raw mode + the
@@ -32,6 +33,75 @@ pub fn run(result: QueryResult) -> Result<()> {
   outcome
 }
 
+/// Launch the interactive browse UI over `driver`: render the schema sidebar +
+/// result table, and on each navigation drain the [`PageTarget`] and fetch that
+/// page read-only. Restores the terminal on the way out, including on a fetch
+/// error (so a query failure can't leave the terminal in raw mode).
+pub async fn browse(driver: SqliteDriver, mut app: App) -> Result<()> {
+  let mut terminal = match ratatui::try_init() {
+    Ok(terminal) => terminal,
+    Err(e) => {
+      let _ = ratatui::try_restore();
+      return Err(e.into());
+    }
+  };
+  let outcome = browse_loop(&mut terminal, &driver, &mut app).await;
+  ratatui::try_restore()?;
+  outcome
+}
+
+/// Browse event loop: draw, read a key, dispatch, then service one pending page
+/// fetch. All coordination lives in [`App::take_page_target`]; this loop only
+/// turns the target into a query and feeds the rows back. Manual Phase-1 gate.
+async fn browse_loop(terminal: &mut ratatui::DefaultTerminal, driver: &SqliteDriver, app: &mut App) -> Result<()> {
+  loop {
+    terminal.draw(|frame| view::render(frame, &*app))?;
+    if let Event::Key(key) = event::read()? {
+      if key.kind == KeyEventKind::Press {
+        if let Some(c) = key_action(key.code) {
+          app.on_key(c);
+        }
+      }
+    }
+    if let Some(target) = app.take_page_target() {
+      let result = driver.query(&page_sql(&target)).await?;
+      app.apply_page(result);
+    }
+    if app.should_quit() {
+      break;
+    }
+  }
+  Ok(())
+}
+
+/// Build the read-only page query for a browse fetch: `SELECT * FROM
+/// "schema"."relation" [ORDER BY …] LIMIT n OFFSET m`. Identifiers are
+/// double-quoted with embedded quotes doubled, so a name like `a"b` can't break
+/// out of the quoting. Pure — tested in `tui_runtime_tests.rs`.
+pub fn page_sql(target: &PageTarget) -> String {
+  let table = quote_qualified(&target.relation.schema, &target.relation.relation);
+  let order = target
+    .order_by
+    .as_deref()
+    .map(|clause| format!(" {clause}"))
+    .unwrap_or_default();
+  format!(
+    "SELECT * FROM {table}{order} LIMIT {} OFFSET {}",
+    target.limit, target.offset
+  )
+}
+
+/// Double-quote a `schema.relation` identifier (schema omitted when empty).
+fn quote_qualified(schema: &str, relation: &str) -> String {
+  let relation = relation.replace('"', "\"\"");
+  if schema.is_empty() {
+    format!("\"{relation}\"")
+  } else {
+    let schema = schema.replace('"', "\"\"");
+    format!("\"{schema}\".\"{relation}\"")
+  }
+}
+
 /// Map a key press to the `App::on_key` character it triggers, or `None` when
 /// the key is unbound. Pure (no terminal), so the arrow/`Esc` aliasing is
 /// testable without a pty: `Char(c)` passes through, the arrows alias the vim
@@ -40,6 +110,10 @@ pub fn run(result: QueryResult) -> Result<()> {
 pub fn key_action(code: KeyCode) -> Option<char> {
   match code {
     KeyCode::Char(c) => Some(c),
+    // Enter / Tab carry the App's open-relation and focus-toggle actions; the
+    // pure state machine already speaks `'\n'` / `'\t'`.
+    KeyCode::Enter => Some('\n'),
+    KeyCode::Tab => Some('\t'),
     KeyCode::Left => Some('h'),
     KeyCode::Right => Some('l'),
     KeyCode::Up => Some('k'),

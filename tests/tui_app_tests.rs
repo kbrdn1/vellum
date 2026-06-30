@@ -647,3 +647,45 @@ fn opening_a_relation_drops_a_pending_requery() {
     "a stale re-query from the previous relation is dropped"
   );
 }
+
+// ── Browse fetch target (#83) ─────────────────────────────────────────────
+
+#[test]
+fn nothing_to_fetch_before_a_relation_is_open() {
+  let mut app = App::browse(catalog(), caps(false));
+  assert!(app.take_page_target().is_none(), "no relation open -> nothing to fetch");
+}
+
+#[test]
+fn opening_a_relation_targets_page_zero_unsorted() {
+  let mut app = App::browse(catalog(), caps(false));
+  app.on_key(' ');
+  app.on_key('j');
+  app.on_key('\n'); // open `users`
+  let target = app.take_page_target().expect("opening requests page 0");
+  assert_eq!(target.relation.relation, "users");
+  assert_eq!(target.relation.schema, "public");
+  assert_eq!((target.limit, target.offset), (51, 0));
+  assert_eq!(target.order_by, None);
+  assert!(app.take_page_target().is_none(), "drained — nothing pending now");
+}
+
+#[test]
+fn the_target_follows_paging_then_sorting() {
+  let mut app = App::browse(catalog(), caps(false));
+  app.on_key(' ');
+  app.on_key('j');
+  app.on_key('\n'); // open `users`
+  app.take_page_target(); // drain the open
+  app.apply_page(grid(2, 51)); // page 0, has a next
+  app.on_key('\t'); // focus the table
+  app.on_key('n'); // page 1
+  let target = app.take_page_target().expect("paging requests a fetch");
+  assert_eq!(target.offset, 50, "page 1 offset");
+  assert_eq!(target.order_by, None);
+  app.apply_page(grid(2, 51));
+  app.on_key('s'); // sort column 0
+  let target = app.take_page_target().expect("sorting requests a fetch");
+  assert_eq!(target.offset, 0, "sort restarts at page 0");
+  assert_eq!(target.order_by.as_deref(), Some(r#"ORDER BY "c0" ASC"#));
+}
