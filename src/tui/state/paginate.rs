@@ -81,7 +81,7 @@ impl Paginator {
   /// loaded count — the new page is unknown until the runtime [`record`]s it.
   ///
   /// [`record`]: Paginator::record
-  pub fn next(&mut self) -> bool {
+  pub fn next_page(&mut self) -> bool {
     if self.has_next() {
       self.page += 1;
       self.loaded = 0;
@@ -92,8 +92,8 @@ impl Paginator {
   }
 
   /// Retreat one page, saturating at the first; returns whether it moved.
-  /// Clears the loaded count like [`next`](Paginator::next).
-  pub fn prev(&mut self) -> bool {
+  /// Clears the loaded count like [`next_page`](Paginator::next_page).
+  pub fn prev_page(&mut self) -> bool {
     if self.page > 0 {
       self.page -= 1;
       self.loaded = 0;

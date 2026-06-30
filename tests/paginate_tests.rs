@@ -56,7 +56,7 @@ fn an_empty_page_reports_no_rows() {
 fn next_advances_offset_and_recomputes_the_counter() {
   let mut p = Paginator::new(50);
   p.record(51); // page 0 full, has a next
-  assert!(p.next(), "moved to page 1");
+  assert!(p.next_page(), "moved to page 1");
   assert_eq!(p.offset(), 50, "page 1 starts at offset 50");
   assert_eq!(p.visible(), 0, "page 1 not fetched yet -> loaded reset");
   p.record(20); // page 1 is a partial last page
@@ -68,14 +68,14 @@ fn next_advances_offset_and_recomputes_the_counter() {
 fn next_is_bounded_when_there_is_no_probe_row() {
   let mut p = Paginator::new(50);
   p.record(50); // exactly one page, no probe
-  assert!(!p.next(), "no next page to move to");
+  assert!(!p.next_page(), "no next page to move to");
   assert_eq!(p.offset(), 0, "cursor stayed on page 0");
 }
 
 #[test]
 fn prev_saturates_at_the_first_page() {
   let mut p = Paginator::new(50);
-  assert!(!p.prev(), "already on the first page");
+  assert!(!p.prev_page(), "already on the first page");
   assert_eq!(p.offset(), 0);
 }
 
@@ -83,8 +83,8 @@ fn prev_saturates_at_the_first_page() {
 fn prev_returns_to_the_previous_page() {
   let mut p = Paginator::new(50);
   p.record(51);
-  p.next(); // page 1
-  assert!(p.prev(), "back to page 0");
+  p.next_page(); // page 1
+  assert!(p.prev_page(), "back to page 0");
   assert_eq!(p.offset(), 0);
   assert_eq!(p.visible(), 0, "page 0 must be re-fetched after moving back");
 }
