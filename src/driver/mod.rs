@@ -12,7 +12,7 @@ pub use sqlite::SqliteDriver;
 
 use async_trait::async_trait;
 
-use sqlparser::ast::Statement;
+use sqlparser::ast::{Query, SetExpr, Statement};
 use sqlparser::dialect::Dialect;
 use sqlparser::parser::Parser;
 
@@ -39,7 +39,17 @@ pub(crate) fn ensure_single_read_query(dialect: &dyn Dialect, sql: &str) -> Resu
   match statements.as_slice() {
     // A single SELECT-style query (covers `WITH … SELECT`, `VALUES`, unions),
     // or empty / comment-only input (harmless).
-    [Statement::Query(_)] | [] => Ok(()),
+    [Statement::Query(query)] if !query_writes_via_into(query) => Ok(()),
+    [] => Ok(()),
+    // `SELECT … INTO` is a write that a `Query` smuggles past the statement
+    // shape: `INTO <table>` is `CREATE TABLE AS` (Postgres), and `INTO
+    // OUTFILE/DUMPFILE` writes a file (MySQL) — the latter is NOT stopped by a
+    // READ ONLY transaction. Refuse it at the parser, engine-agnostically.
+    [Statement::Query(_)] => Err(VellumError::Driver(
+      "read-only path: `SELECT … INTO` writes (a table or a file) and is refused; \
+       reads go through the write/diff gate"
+        .into(),
+    )),
     [_] => Err(VellumError::Driver(
       "read-only path: only SELECT-style queries run here; writes go through \
        the write/diff gate"
@@ -50,6 +60,15 @@ pub(crate) fn ensure_single_read_query(dialect: &dyn Dialect, sql: &str) -> Resu
       stmts.len()
     ))),
   }
+}
+
+/// Whether a parsed `Query` carries a `SELECT … INTO` clause — a write that
+/// looks like a read. `INTO <table>` materialises a table (Postgres
+/// `CREATE TABLE AS`); `INTO OUTFILE`/`DUMPFILE` writes a file (MySQL) that a
+/// READ ONLY transaction does not stop. The clause is only valid at the top
+/// level of a `SELECT`, so the outer body is the only place to look.
+fn query_writes_via_into(query: &Query) -> bool {
+  matches!(&*query.body, SetExpr::Select(select) if select.into.is_some())
 }
 
 #[async_trait]
@@ -75,4 +94,47 @@ pub trait Driver: Send + Sync {
 
   /// Which engine this driver talks to.
   fn kind(&self) -> Backend;
+}
+
+#[cfg(test)]
+mod tests {
+  use super::ensure_single_read_query;
+  use sqlparser::dialect::{MySqlDialect, PostgreSqlDialect, SQLiteDialect};
+
+  // The guard is `pub(crate)`, so it is unit-tested here (an integration test
+  // in `tests/` can't reach it). It is a pure parser-level function.
+
+  #[test]
+  fn allows_a_single_plain_select_on_every_dialect() {
+    assert!(ensure_single_read_query(&SQLiteDialect {}, "SELECT 1").is_ok());
+    assert!(ensure_single_read_query(&PostgreSqlDialect {}, "SELECT 1").is_ok());
+    assert!(ensure_single_read_query(&MySqlDialect {}, "SELECT 1").is_ok());
+  }
+
+  #[test]
+  fn refuses_select_into_outfile_and_dumpfile() {
+    // `SELECT … INTO OUTFILE/DUMPFILE` writes a *file* — a write that a MySQL
+    // `READ ONLY` transaction does NOT block (it restricts table writes, not
+    // file writes). It parses as a top-level `Query`, so it must be refused at
+    // the parser guard, not left to the engine.
+    assert!(
+      ensure_single_read_query(&MySqlDialect {}, "SELECT 1 INTO OUTFILE '/tmp/x'").is_err(),
+      "SELECT … INTO OUTFILE must be refused"
+    );
+    assert!(
+      ensure_single_read_query(&MySqlDialect {}, "SELECT 1 INTO DUMPFILE '/tmp/x'").is_err(),
+      "SELECT … INTO DUMPFILE must be refused"
+    );
+  }
+
+  #[test]
+  fn refuses_select_into_table() {
+    // Postgres `SELECT … INTO newtable` is `CREATE TABLE AS` — a write. The
+    // per-engine read-only transaction catches it, but rejecting the INTO at
+    // the parser is defence in depth and keeps the guard engine-agnostic.
+    assert!(
+      ensure_single_read_query(&PostgreSqlDialect {}, "SELECT 1 INTO foo").is_err(),
+      "SELECT … INTO <table> must be refused"
+    );
+  }
 }
