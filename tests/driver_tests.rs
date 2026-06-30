@@ -718,30 +718,33 @@ mod postgres_it {
     let pool = seed_pool().await;
     // A dedicated schema isolates this test (Postgres has real schemas).
     pool
-      .execute("drop schema if exists it_vellum cascade")
+      .execute("drop schema if exists vellum_it_pgcat cascade")
       .await
       .expect("drop schema");
-    pool.execute("create schema it_vellum").await.expect("create schema");
     pool
-      .execute("create table it_vellum.users (id int primary key, email text not null, bio text)")
+      .execute("create schema vellum_it_pgcat")
+      .await
+      .expect("create schema");
+    pool
+      .execute("create table vellum_it_pgcat.users (id int primary key, email text not null, bio text)")
       .await
       .expect("create users");
     pool
       .execute(
-        "create table it_vellum.orders (id int primary key, \
-         user_id int not null references it_vellum.users(id), total double precision)",
+        "create table vellum_it_pgcat.orders (id int primary key, \
+         user_id int not null references vellum_it_pgcat.users(id), total double precision)",
       )
       .await
       .expect("create orders");
     pool
-      .execute("create view it_vellum.recent as select id, user_id from it_vellum.orders")
+      .execute("create view vellum_it_pgcat.recent as select id, user_id from vellum_it_pgcat.orders")
       .await
       .expect("create view");
 
     let driver = PostgresDriver::connect(&dsn()).await.expect("connect read-only");
     let catalog = driver.introspect().await.expect("introspect the schema");
     let db = catalog.databases.first().expect("one database");
-    let schema = db.schema("it_vellum").expect("schema it_vellum");
+    let schema = db.schema("vellum_it_pgcat").expect("schema vellum_it_pgcat");
 
     let users = schema.relation("users").expect("relation users");
     assert_eq!(users.kind, RelationKind::Table);
@@ -759,22 +762,22 @@ mod postgres_it {
     assert_eq!(fk.references.relation, "users");
     assert_eq!(fk.references.columns, ["id"]);
     // The FK resolves (same-schema reference carries its schema).
-    let target = db.resolve(fk, "it_vellum").expect("the FK resolves");
+    let target = db.resolve(fk, "vellum_it_pgcat").expect("the FK resolves");
     assert_eq!(target.name, "users");
   }
 
   #[tokio::test]
   async fn pg_introspection_keeps_user_schemas_prefixed_like_pg() {
-    // `pgx` matches a wildcard `pg_%` (the `_` is a LIKE wildcard) but is NOT a
+    // `pgvellum_it` matches a wildcard `pg_%` (the `_` is a LIKE wildcard) but is NOT a
     // reserved `pg_` schema — it must survive (the exclusion escapes the `_`).
     let pool = seed_pool().await;
     pool
-      .execute("drop schema if exists pgx cascade")
+      .execute("drop schema if exists pgvellum_it cascade")
       .await
       .expect("drop schema");
-    pool.execute("create schema pgx").await.expect("create schema");
+    pool.execute("create schema pgvellum_it").await.expect("create schema");
     pool
-      .execute("create table pgx.t (id int primary key)")
+      .execute("create table pgvellum_it.t (id int primary key)")
       .await
       .expect("create table");
 
@@ -782,7 +785,7 @@ mod postgres_it {
     let catalog = driver.introspect().await.expect("introspect the schema");
     let db = catalog.databases.first().expect("one database");
     assert!(
-      db.schema("pgx").is_some(),
+      db.schema("pgvellum_it").is_some(),
       "a user schema named like `pg...` (no literal `pg_`) must not be dropped"
     );
   }
@@ -796,20 +799,23 @@ mod postgres_it {
     // leaks into the PK set and a homonym is wrongly flagged.
     let pool = seed_pool().await;
     pool
-      .execute("drop schema if exists it_dup cascade")
+      .execute("drop schema if exists vellum_it_pkdup cascade")
       .await
       .expect("drop schema");
-    pool.execute("create schema it_dup").await.expect("create schema");
+    pool
+      .execute("create schema vellum_it_pkdup")
+      .await
+      .expect("create schema");
     // t_a: PK `pk_col` (constraint `shared_name`) plus a plain `other_col`.
     pool
-      .execute("create table it_dup.t_a (pk_col int constraint shared_name primary key, other_col int)")
+      .execute("create table vellum_it_pkdup.t_a (pk_col int constraint shared_name primary key, other_col int)")
       .await
       .expect("create t_a");
     // t_b: a FK *also* named `shared_name`, on a column named `other_col`.
     pool
       .execute(
-        "create table it_dup.t_b (other_col int, \
-         constraint shared_name foreign key (other_col) references it_dup.t_a(pk_col))",
+        "create table vellum_it_pkdup.t_b (other_col int, \
+         constraint shared_name foreign key (other_col) references vellum_it_pkdup.t_a(pk_col))",
       )
       .await
       .expect("create t_b");
@@ -820,8 +826,8 @@ mod postgres_it {
       .databases
       .first()
       .unwrap()
-      .schema("it_dup")
-      .expect("schema it_dup");
+      .schema("vellum_it_pkdup")
+      .expect("schema vellum_it_pkdup");
     let t_a = schema.relation("t_a").expect("relation t_a");
     assert!(
       t_a.column("pk_col").expect("column pk_col").primary_key,
@@ -840,19 +846,22 @@ mod postgres_it {
     // top-level write — Postgres refuses it (`must be at the top level`) — so
     // even if the parser waves it through, nothing is written.
     let pool = seed_pool().await;
-    pool.execute("drop table if exists it_hidden").await.expect("drop");
     pool
-      .execute("create table it_hidden (x int)")
+      .execute("drop table if exists vellum_it_hidden")
+      .await
+      .expect("drop");
+    pool
+      .execute("create table vellum_it_hidden (x int)")
       .await
       .expect("create table");
 
     let driver = PostgresDriver::connect(&dsn()).await.expect("connect read-only");
     let outcome = driver
-      .query("select * from (with w as (insert into it_hidden values (1) returning *) select * from w) s")
+      .query("select * from (with w as (insert into vellum_it_hidden values (1) returning *) select * from w) s")
       .await;
     assert!(outcome.is_err(), "a write hidden in a subquery must be refused");
 
-    let count: i64 = sqlx::query_scalar("select count(*) from it_hidden")
+    let count: i64 = sqlx::query_scalar("select count(*) from vellum_it_hidden")
       .fetch_one(&pool)
       .await
       .expect("count rows");
@@ -1067,8 +1076,9 @@ mod mysql_it {
     assert_eq!(fk.references.relation, "it_users");
     assert_eq!(fk.references.columns, ["id"]);
     // A same-database FK still carries its schema (the connected db) — not
-    // `None` (guards the cross-db schema carry against regression).
-    assert_eq!(fk.references.schema.as_deref(), Some("testdb"));
+    // `None` (guards the cross-db schema carry against regression). Derived from
+    // the introspected db, so it holds whatever database the DSN points at.
+    assert_eq!(fk.references.schema.as_deref(), Some(db.name.as_str()));
   }
 
   #[tokio::test]
@@ -1120,46 +1130,59 @@ mod mysql_it {
     let pool = seed_pool().await;
     pool.execute("drop table if exists it_child").await.expect("drop child");
     pool
-      .execute("drop database if exists it_other")
+      .execute("drop database if exists vellum_it_xdb")
       .await
       .expect("drop other db");
-    pool.execute("create database it_other").await.expect("create other db");
     pool
-      .execute("create table it_other.parent (id int primary key)")
+      .execute("create database vellum_it_xdb")
+      .await
+      .expect("create other db");
+    pool
+      .execute("create table vellum_it_xdb.parent (id int primary key)")
       .await
       .expect("create parent");
     pool
-      .execute("create table it_child (pid int, foreign key (pid) references it_other.parent(id))")
+      .execute("create table it_child (pid int, foreign key (pid) references vellum_it_xdb.parent(id))")
       .await
       .expect("create child with a cross-db FK");
 
+    // Introspect and extract the asserted values, capturing instead of
+    // panicking so the cleanup below (which drops a database) always runs.
     let driver = MySqlDriver::connect(&dsn()).await.expect("connect read-only");
-    let catalog = driver.introspect().await.expect("introspect the schema");
-    let child = catalog
-      .databases
-      .first()
-      .unwrap()
-      .schemas
-      .first()
-      .unwrap()
-      .relation("it_child")
-      .expect("relation it_child");
-    assert_eq!(child.foreign_keys.len(), 1);
-    let fk = &child.foreign_keys[0];
-    assert_eq!(fk.references.relation, "parent");
-    assert_eq!(
-      fk.references.schema.as_deref(),
-      Some("it_other"),
-      "a cross-database FK must carry the referenced schema"
-    );
+    let captured: Result<(usize, String, Option<String>), String> = async {
+      let catalog = driver.introspect().await.map_err(|e| e.to_string())?;
+      let schema = catalog
+        .databases
+        .first()
+        .and_then(|d| d.schemas.first())
+        .ok_or("no schema")?;
+      let child = schema.relation("it_child").ok_or("relation it_child missing")?;
+      let fk = child.foreign_keys.first().ok_or("no foreign key")?;
+      Ok((
+        child.foreign_keys.len(),
+        fk.references.relation.clone(),
+        fk.references.schema.clone(),
+      ))
+    }
+    .await;
 
+    // Clean up ALWAYS, before asserting.
     pool
       .execute("drop table if exists it_child")
       .await
       .expect("cleanup child");
     pool
-      .execute("drop database if exists it_other")
+      .execute("drop database if exists vellum_it_xdb")
       .await
       .expect("cleanup other db");
+
+    let (fk_count, ref_relation, ref_schema) = captured.expect("introspect cross-db FK");
+    assert_eq!(fk_count, 1);
+    assert_eq!(ref_relation, "parent");
+    assert_eq!(
+      ref_schema.as_deref(),
+      Some("vellum_it_xdb"),
+      "a cross-database FK must carry the referenced schema"
+    );
   }
 }
