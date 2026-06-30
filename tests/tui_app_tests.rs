@@ -288,6 +288,60 @@ fn expanding_a_relation_reveals_then_hides_its_columns() {
 }
 
 #[test]
+fn sidebar_capital_g_jumps_last_and_g_jumps_first() {
+  let mut app = App::browse(catalog(), caps(false));
+  app.on_key(' '); // [app, users, orders]
+  app.on_key('G');
+  assert_eq!(app.sidebar().unwrap().selected(), 2, "G jumps to the last node");
+  app.on_key('g');
+  assert_eq!(app.sidebar().unwrap().selected(), 0, "g jumps to the first node");
+}
+
+#[test]
+fn enter_on_a_database_toggles_it_without_intent() {
+  // Enter on a non-relation node (the database) behaves like Space: it toggles
+  // expansion and emits no browse intent.
+  let mut app = App::browse(catalog(), caps(false));
+  app.on_key('\n');
+  assert_eq!(
+    app.sidebar().unwrap().visible_nodes().len(),
+    3,
+    "Enter expanded the database"
+  );
+  assert!(app.take_browse_intent().is_none(), "a database opens nothing");
+  app.on_key('\n');
+  assert_eq!(
+    app.sidebar().unwrap().visible_nodes().len(),
+    1,
+    "Enter collapsed it again"
+  );
+}
+
+#[test]
+fn a_view_relation_maps_to_the_view_kind() {
+  // Tables and views are distinct kinds so the view can icon them apart.
+  let cat = Catalog {
+    databases: vec![Database {
+      name: "app".into(),
+      schemas: vec![Schema {
+        name: "public".into(),
+        relations: vec![Relation {
+          name: "active_users".into(),
+          kind: RelationKind::View,
+          columns: vec![cat_column("id")],
+          foreign_keys: vec![],
+        }],
+      }],
+    }],
+  };
+  let mut app = App::browse(cat, caps(false));
+  app.on_key(' '); // expand db → the view row appears
+  let view = &app.sidebar().unwrap().visible_nodes()[1];
+  assert_eq!(view.label, "active_users");
+  assert_eq!(view.kind, SidebarKind::View, "a view maps to the View kind, not Table");
+}
+
+#[test]
 fn sidebar_cursor_clamps_at_both_ends() {
   let mut app = App::browse(catalog(), caps(false));
   app.on_key(' '); // [app, users, orders]
