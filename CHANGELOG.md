@@ -15,6 +15,21 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Phase 1 — schema sidebar tree (#14):** a pure, ratatui-free `SidebarState`
+  (`tui/state/sidebar.rs`) over a `Catalog` — the navigation surface the browse
+  view reads. The tree (`Database → Schema → Relation → Column`) is flattened to
+  a list of *visible* nodes honouring expand/collapse, the cursor is a clamped
+  index, and node identity is a stable index path (the catalog is introspected
+  once). Backends without real schemas (`capabilities().schemas == false`:
+  SQLite, MySQL) hide the schema row — relations sit directly under the database
+  — but a selected relation still carries its schema name (the browse query
+  needs it). `App` grows additively into two modes sharing one type: the Phase-0
+  one-shot table (`App::new`, unchanged) and **browse** (`App::browse(catalog,
+  capabilities)`) — a sidebar plus an initially-empty table, `Tab` toggling
+  focus between the panes, and `Enter` on a relation emitting an open-browse
+  intent (`take_browse_intent`) the loader (#15) consumes. State machine + focus
+  + intent are unit-tested in `tests/tui_app_tests.rs`; the sidebar render and
+  the live browse runtime land with #15.
 - **Phase 1 — frozen `Driver` port + Postgres introspection (#11):** with three
   real impls justifying it, the port is frozen to `connect` / `query` /
   `introspect` / `backend` / `capabilities` — the contract the TUI codes against
