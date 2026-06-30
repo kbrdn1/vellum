@@ -2,5 +2,6 @@
 //! view. The result-table state shipped in Phase 0; the schema sidebar (#14)
 //! is the second pane; the diff view lands in a later phase.
 
+pub mod paginate;
 pub mod sidebar;
 pub mod table;
