@@ -15,6 +15,19 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Phase 1 — column sort on browse (#19):** a pure, ratatui-free `Sort` +
+  `toggle_sort` (`tui/state/sort.rs`) — one column at a time, tri-state
+  (ascending → descending → off), rendering an `ORDER BY "col" ASC|DESC` clause
+  with the identifier double-quoted (embedded quotes doubled, so `a"b` can't
+  break out). **Server-side by construction:** it never sorts rows in memory, so
+  it stays consistent with the virtualised/paginated browse. `App` browse mode
+  wires it in: `s` on the table pane toggles the sort on the column under the
+  horizontal cursor, restarts pagination from page 0, and raises a re-query flag
+  (`take_requery`) the runtime services by re-fetching page 0 with the new
+  `ORDER BY`; opening a relation drops the sort (its columns differ). Inert
+  outside browse and on an empty result. Pure clause/toggle unit-tested in
+  `tests/sort_tests.rs`, the `s` wiring in `tests/tui_app_tests.rs`; splicing the
+  clause into the live page query lands with the browse-runtime integration.
 - **Phase 1 — SQL editor buffer (#16):** a pure, ratatui-free `EditorState`
   (`tui/state/editor.rs`) — a flat `Vec<char>` + one cursor index, with insert /
   backspace / left / right / text. A newline is just a `'\n'`, so multiline falls

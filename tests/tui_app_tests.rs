@@ -550,3 +550,100 @@ fn one_shot_and_browse_have_no_editor() {
   app.submit_query();
   assert!(app.take_run_query().is_none());
 }
+
+// ── Column sort on browse (#19) ───────────────────────────────────────────
+
+/// A browse app with `users` already loaded onto the table, focused on it.
+fn browse_with_loaded_table() -> App {
+  let mut app = App::browse(catalog(), caps(false));
+  app.on_key(' '); // expand db
+  app.on_key('j'); // onto `users`
+  app.on_key('\n'); // open it
+  app.take_browse_intent();
+  app.apply_page(grid(2, 3)); // columns c0, c1 land on the table
+  app.on_key('\t'); // focus the table pane
+  app
+}
+
+#[test]
+fn s_sorts_the_current_column_and_asks_for_a_requery() {
+  let mut app = browse_with_loaded_table();
+  assert!(app.sort().is_none(), "no sort until asked");
+  app.on_key('s');
+  assert_eq!(
+    app.sort().map(|s| s.order_by_clause()),
+    Some(r#"ORDER BY "c0" ASC"#.to_string()),
+    "sorts the column under the horizontal cursor (col 0)"
+  );
+  assert!(app.take_requery(), "a sort change asks the runtime to re-fetch");
+  assert!(!app.take_requery(), "the flag clears on read");
+}
+
+#[test]
+fn s_cycles_ascending_descending_off() {
+  let mut app = browse_with_loaded_table();
+  app.on_key('s');
+  assert_eq!(app.sort().unwrap().order_by_clause(), r#"ORDER BY "c0" ASC"#);
+  app.on_key('s');
+  assert_eq!(app.sort().unwrap().order_by_clause(), r#"ORDER BY "c0" DESC"#);
+  app.on_key('s');
+  assert!(app.sort().is_none(), "the third press clears the sort");
+}
+
+#[test]
+fn sorting_restarts_pagination_from_page_zero() {
+  let mut app = App::browse(catalog(), caps(false));
+  app.on_key(' ');
+  app.on_key('j');
+  app.on_key('\n');
+  app.take_browse_intent();
+  app.apply_page(grid(2, 51)); // a full page + probe
+  app.on_key('\t');
+  app.on_key('n'); // page 1
+  app.take_page_request();
+  app.apply_page(grid(2, 20));
+  assert_eq!(app.page_counter().as_deref(), Some("rows 51-70"));
+  app.on_key('s'); // sort -> must reset to page 0
+  assert!(app.take_requery());
+  app.apply_page(grid(2, 51)); // runtime re-fetches page 0 sorted
+  assert_eq!(
+    app.page_counter().as_deref(),
+    Some("rows 1-50"),
+    "sort restarts at page 0"
+  );
+}
+
+#[test]
+fn opening_a_relation_clears_the_sort() {
+  let mut app = browse_with_loaded_table();
+  app.on_key('s'); // sort users.c0
+  assert!(app.sort().is_some());
+  app.on_key('\t'); // back to sidebar
+  app.on_key('j'); // onto `orders`
+  app.on_key('\n'); // open it
+  assert!(app.sort().is_none(), "a new relation drops the previous sort");
+}
+
+#[test]
+fn one_shot_mode_ignores_sort() {
+  let mut app = App::new(grid(2, 3));
+  app.on_key('s'); // no paginator -> server-side sort is inert
+  assert!(app.sort().is_none());
+  assert!(!app.take_requery());
+}
+
+#[test]
+fn opening_a_relation_drops_a_pending_requery() {
+  // Mirror of the stale-page-request guard: a sort raises `requery`; opening a
+  // different relation resets the sort, so the stale re-query must drop too —
+  // else the runtime double-fetches on top of the new open-browse intent.
+  let mut app = browse_with_loaded_table();
+  app.on_key('s'); // sets sort + requery, NOT consumed
+  app.on_key('\t'); // back to the sidebar
+  app.on_key('j'); // onto `orders`
+  app.on_key('\n'); // open it
+  assert!(
+    !app.take_requery(),
+    "a stale re-query from the previous relation is dropped"
+  );
+}
