@@ -115,7 +115,7 @@ fn navigation_on_empty_result_stays_in_bounds() {
 use vellum::driver::Capabilities;
 use vellum::model::catalog::{Catalog, Column as CatColumn, Database, Relation, RelationKind, Schema};
 use vellum::tui::app::Focus;
-use vellum::tui::state::sidebar::RelationRef;
+use vellum::tui::state::sidebar::{RelationRef, SidebarKind};
 
 fn cat_column(name: &str) -> CatColumn {
   CatColumn {
@@ -252,6 +252,39 @@ fn with_schemas_the_schema_row_is_shown() {
     .map(|n| n.label.clone())
     .collect();
   assert_eq!(labels, ["app", "public", "users", "orders"]);
+}
+
+#[test]
+fn expanding_a_relation_reveals_then_hides_its_columns() {
+  // The deepest level: a relation flattens to its columns when expanded. Schema
+  // row hidden so the path stays short: db → relation → columns.
+  let mut app = App::browse(catalog(), caps(false));
+  app.on_key(' '); // expand db → [app, users, orders]
+  app.on_key('j'); // onto `users`
+  app.on_key(' '); // expand `users` → its columns appear under it
+
+  let nodes = app.sidebar().unwrap().visible_nodes();
+  let labels: Vec<&str> = nodes.iter().map(|n| n.label.as_str()).collect();
+  assert_eq!(
+    labels,
+    ["app", "users", "id", "email", "orders"],
+    "columns sit under their relation, got {labels:?}"
+  );
+  // The column rows carry the right kind and indent one level past the relation.
+  let id = &nodes[2];
+  assert_eq!(id.kind, SidebarKind::Column);
+  assert_eq!(id.depth, 2, "columns indent one past a depth-1 relation");
+  assert!(!id.expandable, "a column is a leaf");
+
+  app.on_key(' '); // collapse `users` → columns vanish
+  let labels: Vec<String> = app
+    .sidebar()
+    .unwrap()
+    .visible_nodes()
+    .iter()
+    .map(|n| n.label.clone())
+    .collect();
+  assert_eq!(labels, ["app", "users", "orders"], "columns hidden again");
 }
 
 #[test]
