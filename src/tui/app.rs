@@ -203,6 +203,7 @@ impl App {
     self.paginator = Some(Paginator::new(DEFAULT_PAGE_SIZE));
     self.page_request = None;
     self.sort = None;
+    self.requery = false;
   }
 
   /// Toggle the server-side sort on the column under the horizontal cursor

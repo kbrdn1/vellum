@@ -631,3 +631,19 @@ fn one_shot_mode_ignores_sort() {
   assert!(app.sort().is_none());
   assert!(!app.take_requery());
 }
+
+#[test]
+fn opening_a_relation_drops_a_pending_requery() {
+  // Mirror of the stale-page-request guard: a sort raises `requery`; opening a
+  // different relation resets the sort, so the stale re-query must drop too —
+  // else the runtime double-fetches on top of the new open-browse intent.
+  let mut app = browse_with_loaded_table();
+  app.on_key('s'); // sets sort + requery, NOT consumed
+  app.on_key('\t'); // back to the sidebar
+  app.on_key('j'); // onto `orders`
+  app.on_key('\n'); // open it
+  assert!(
+    !app.take_requery(),
+    "a stale re-query from the previous relation is dropped"
+  );
+}
