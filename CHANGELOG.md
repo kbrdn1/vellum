@@ -15,6 +15,21 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Phase 1 — frozen `Driver` port + Postgres introspection (#11):** with three
+  real impls justifying it, the port is frozen to `connect` / `query` /
+  `introspect` / `backend` / `capabilities` — the contract the TUI codes against
+  (`Box<dyn Driver>`, guarded by an object-safety test). `introspect()` moves
+  onto the trait (all three back it), and **Postgres introspection** lands here
+  (deferred from #10): `information_schema` + `pg_catalog`, **multi-schema** (a
+  `Database` with every user schema), composite-safe foreign keys via
+  `unnest(conkey, confkey) WITH ORDINALITY`. A new `Capabilities` record gates
+  UI per backend — `explain` / `schemas` / `foreign_keys`: Postgres has real
+  schemas (`schemas: true`), SQLite and MySQL collapse database and schema
+  (`false`). The write path (`execute`) and streaming (`query_stream`) are
+  deliberately **not** frozen onto the port — `execute`'s shape depends on the
+  changeset model (#64) and streaming has no Phase-1 consumer; freezing either
+  as a stub would be speculative (YAGNI). `Driver::kind()` is renamed
+  `backend()`.
 - **Phase 1 — MySQL driver (#11):** the third `Driver` impl, `MySqlDriver`
   (sqlx, rustls). Read-only by construction in two layers: the shared parser
   guard — now hardened to reject `SELECT … INTO OUTFILE`/`DUMPFILE`, a *file*

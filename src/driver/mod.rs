@@ -1,8 +1,11 @@
-//! The multi-DB port. **Sketch** — deliberately minimal (`connect` / `query`
-//! / `kind`) while SQLite is the only impl. It freezes into the richer port
-//! (capabilities, introspect, streaming, transactional execute —
-//! ARCHITECTURE §4) in Phase 1, once Postgres is the second impl. No
-//! speculative abstraction now (YAGNI).
+//! The multi-DB port, **frozen** in Phase 1 (#11) now that three real impls
+//! justify the abstraction (SQLite, Postgres, MySQL): `connect` / `query` /
+//! `introspect` / `backend` / `capabilities`. The write path (`execute`) and
+//! streaming (`query_stream`) are deliberately *not* on the port — `execute`'s
+//! shape depends on the changeset model designed with the gated write/diff path
+//! (#64), and streaming has no Phase-1 consumer (the browse paginates). Adding
+//! either now would be a speculative, untestable stub (YAGNI). They join the
+//! port with their phase.
 
 pub mod mysql;
 pub mod postgres;
@@ -19,7 +22,7 @@ use sqlparser::dialect::Dialect;
 use sqlparser::parser::Parser;
 
 use crate::error::{Result, VellumError};
-use crate::model::{Backend, QueryResult};
+use crate::model::{Backend, Catalog, QueryResult};
 
 /// Guard the read path for every backend: reject anything that isn't a single
 /// read-only query before it reaches the database. The `dialect` is the
@@ -73,35 +76,69 @@ fn query_writes_via_into(query: &Query) -> bool {
   matches!(&*query.body, SetExpr::Select(select) if select.into.is_some())
 }
 
+/// What a backend supports, so the UI can gate features per engine (the sidebar
+/// shows a schema level only where there is one; the editor offers EXPLAIN only
+/// where it exists). A small, frozen, copyable record — no speculative fields.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Capabilities {
+  /// The engine can `EXPLAIN` a query (produce a plan). True for all three so
+  /// far; kept on the contract because a future backend may lack it.
+  pub explain: bool,
+  /// The engine has **multiple named schemas within a database** (Postgres).
+  /// SQLite and MySQL collapse database and schema to one, so this is `false`
+  /// — the sidebar then skips the schema level.
+  pub schemas: bool,
+  /// The engine declares/introspects foreign keys (so the catalog's
+  /// `ForeignKey`s are meaningful and the UI can render relationships).
+  pub foreign_keys: bool,
+}
+
 #[async_trait]
 pub trait Driver: Send + Sync {
   /// Open a connection from a backend-specific DSN. For SQLite this is a
-  /// `sqlite:` URL (e.g. `sqlite::memory:` or `sqlite:path/to/file.db`).
+  /// `sqlite:` URL (e.g. `sqlite::memory:` or `sqlite:path/to/file.db`); for
+  /// Postgres / MySQL a `postgres:` / `mysql:` URL. Kept off the vtable
+  /// (`where Self: Sized`) so the port stays object-safe (`Box<dyn Driver>`).
   async fn connect(dsn: &str) -> Result<Self>
   where
     Self: Sized;
 
   /// Run a single **read** statement and collect the full result into memory.
   ///
-  /// This is the read path. The SQLite impl validates the input with
-  /// `sqlparser` (exactly one `SELECT`-style statement — `INSERT` / `UPDATE` /
-  /// `DELETE` / DDL, `CREATE TEMP`, and multi-statement payloads are refused)
-  /// and opens its connections read-only (`SQLITE_OPEN_READONLY`) as a
-  /// backstop, so a mutating statement can't run here. Intentional writes go
-  /// through the gated `execute`/apply path (changeset → diff → confirm), a
-  /// later sacred phase (ARCHITECTURE §4 splits read `query` from write
-  /// `execute`; the write gate is tracked by #64). Streaming by batch is also
-  /// a later-phase concern.
+  /// This is the read path. Every impl validates the input with the shared
+  /// `ensure_single_read_query` (exactly one `SELECT`-style statement, no
+  /// `SELECT … INTO`) and pairs it with an engine-level read-only backstop
+  /// (SQLite `SQLITE_OPEN_READONLY`; Postgres a per-query `READ ONLY`
+  /// transaction; MySQL a session `transaction_read_only`), so a mutating
+  /// statement can't run here. Intentional writes go through the gated
+  /// `execute`/apply path (changeset → diff → confirm), a later sacred phase
+  /// (the write gate is tracked by #64). Streaming by batch is also a
+  /// later-phase concern.
   async fn query(&self, sql: &str) -> Result<QueryResult>;
 
+  /// Read the live schema into the pure [`Catalog`] (databases → schemas →
+  /// relations → columns + foreign keys) the sidebar / autocomplete read from.
+  async fn introspect(&self) -> Result<Catalog>;
+
   /// Which engine this driver talks to.
-  fn kind(&self) -> Backend;
+  fn backend(&self) -> Backend;
+
+  /// What this backend supports, for per-engine UI gating.
+  fn capabilities(&self) -> Capabilities;
 }
 
 #[cfg(test)]
 mod tests {
-  use super::ensure_single_read_query;
+  use super::{ensure_single_read_query, Driver};
   use sqlparser::dialect::{MySqlDialect, PostgreSqlDialect, SQLiteDialect};
+
+  // The frozen port must stay object-safe — the connection manager / TUI hold
+  // `Box<dyn Driver>`. This stops compiling if a method is added that takes
+  // `self` by value without `where Self: Sized`, or that is generic.
+  #[allow(dead_code)]
+  fn assert_object_safe(driver: Box<dyn Driver>) -> Box<dyn Driver> {
+    driver
+  }
 
   // The guard is `pub(crate)`, so it is unit-tested here (an integration test
   // in `tests/` can't reach it). It is a pure parser-level function.

@@ -20,7 +20,7 @@ use sqlx::{Column as _, Row as _, TypeInfo as _, ValueRef as _};
 
 use sqlparser::dialect::MySqlDialect;
 
-use crate::driver::{ensure_single_read_query, Driver};
+use crate::driver::{ensure_single_read_query, Capabilities, Driver};
 use crate::error::{Result, VellumError};
 use crate::model::catalog;
 use crate::model::{Backend, Column, QueryResult, Row, TypeKind, Value};
@@ -36,8 +36,8 @@ impl MySqlDriver {
   /// Reads `information_schema` for the current database (`DATABASE()`). MySQL
   /// conflates database and schema, so the single connected database maps to
   /// one `Database` / `Schema`, both named after it. Inherent for now; it joins
-  /// the `Driver` port when the trait freezes (#11).
-  pub async fn introspect(&self) -> Result<catalog::Catalog> {
+  /// Backs [`Driver::introspect`] (the frozen port, #11).
+  async fn introspect_catalog(&self) -> Result<catalog::Catalog> {
     // `information_schema` string columns have a binary collation — sqlx sees
     // them as `VARBINARY`, which `try_get::<String>` rejects. `CONVERT(_ USING
     // utf8mb4)` forces a character string so they decode as text.
@@ -233,8 +233,22 @@ impl Driver for MySqlDriver {
     })
   }
 
-  fn kind(&self) -> Backend {
+  async fn introspect(&self) -> Result<catalog::Catalog> {
+    self.introspect_catalog().await
+  }
+
+  fn backend(&self) -> Backend {
     Backend::MySql
+  }
+
+  fn capabilities(&self) -> Capabilities {
+    // MySQL: `EXPLAIN`; database = schema (no separate schema level); foreign
+    // keys declared (InnoDB) and introspected.
+    Capabilities {
+      explain: true,
+      schemas: false,
+      foreign_keys: true,
+    }
   }
 }
 

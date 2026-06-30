@@ -17,8 +17,9 @@ use sqlx::{Column as _, Row as _, TypeInfo as _, ValueRef as _};
 
 use sqlparser::dialect::PostgreSqlDialect;
 
-use crate::driver::{ensure_single_read_query, Driver};
+use crate::driver::{ensure_single_read_query, Capabilities, Driver};
 use crate::error::{Result, VellumError};
+use crate::model::catalog;
 use crate::model::{Backend, Column, QueryResult, Row, TypeKind, Value};
 
 /// A connection to a PostgreSQL database, backed by a sqlx pool.
@@ -107,8 +108,197 @@ impl Driver for PostgresDriver {
     })
   }
 
-  fn kind(&self) -> Backend {
+  async fn introspect(&self) -> Result<catalog::Catalog> {
+    self.introspect_catalog().await
+  }
+
+  fn backend(&self) -> Backend {
     Backend::Postgres
+  }
+
+  fn capabilities(&self) -> Capabilities {
+    // Postgres: `EXPLAIN`; multiple named schemas within a database; foreign
+    // keys declared and introspected.
+    Capabilities {
+      explain: true,
+      schemas: true,
+      foreign_keys: true,
+    }
+  }
+}
+
+impl PostgresDriver {
+  /// Backs [`Driver::introspect`]. Reads `information_schema` + `pg_catalog`
+  /// for the connected database. Postgres has multiple named schemas, so the
+  /// catalog is one `Database` (the connected db) holding every user schema
+  /// (system schemas — `pg_catalog`, `information_schema`, `pg_*` — excluded).
+  async fn introspect_catalog(&self) -> Result<catalog::Catalog> {
+    let db_name: String = sqlx::query_scalar("SELECT current_database()")
+      .fetch_one(&self.pool)
+      .await
+      .map_err(driver_err)?;
+
+    let schema_rows = sqlx::query(
+      "SELECT schema_name FROM information_schema.schemata \
+       WHERE schema_name NOT IN ('pg_catalog', 'information_schema') \
+         AND schema_name NOT LIKE 'pg_%' ORDER BY schema_name",
+    )
+    .fetch_all(&self.pool)
+    .await
+    .map_err(driver_err)?;
+
+    let mut schemas = Vec::with_capacity(schema_rows.len());
+    for srow in &schema_rows {
+      let schema_name: String = srow.try_get("schema_name").map_err(driver_err)?;
+      let relations = self.introspect_relations(&schema_name).await?;
+      schemas.push(catalog::Schema {
+        name: schema_name,
+        relations,
+      });
+    }
+
+    Ok(catalog::Catalog {
+      databases: vec![catalog::Database { name: db_name, schemas }],
+    })
+  }
+
+  /// Tables and views of `schema`, in name order.
+  async fn introspect_relations(&self, schema: &str) -> Result<Vec<catalog::Relation>> {
+    let rows = sqlx::query(
+      "SELECT table_name, table_type FROM information_schema.tables \
+       WHERE table_schema = $1 AND table_type IN ('BASE TABLE', 'VIEW') \
+       ORDER BY table_name",
+    )
+    .bind(schema)
+    .fetch_all(&self.pool)
+    .await
+    .map_err(driver_err)?;
+
+    let mut relations = Vec::with_capacity(rows.len());
+    for row in &rows {
+      let name: String = row.try_get("table_name").map_err(driver_err)?;
+      let table_type: String = row.try_get("table_type").map_err(driver_err)?;
+      let kind = if table_type == "VIEW" {
+        catalog::RelationKind::View
+      } else {
+        catalog::RelationKind::Table
+      };
+      let columns = self.introspect_columns(schema, &name).await?;
+      let foreign_keys = self.introspect_foreign_keys(schema, &name).await?;
+      relations.push(catalog::Relation {
+        name,
+        kind,
+        columns,
+        foreign_keys,
+      });
+    }
+    Ok(relations)
+  }
+
+  /// Columns of `schema.relation` in ordinal order. `information_schema` gives
+  /// the type and nullability; a separate constraint query flags primary-key
+  /// columns.
+  async fn introspect_columns(&self, schema: &str, relation: &str) -> Result<Vec<catalog::Column>> {
+    let pk_rows = sqlx::query(
+      "SELECT kcu.column_name FROM information_schema.table_constraints tc \
+       JOIN information_schema.key_column_usage kcu \
+         ON tc.constraint_name = kcu.constraint_name \
+        AND tc.constraint_schema = kcu.constraint_schema \
+       WHERE tc.constraint_type = 'PRIMARY KEY' \
+         AND tc.table_schema = $1 AND tc.table_name = $2",
+    )
+    .bind(schema)
+    .bind(relation)
+    .fetch_all(&self.pool)
+    .await
+    .map_err(driver_err)?;
+    let mut pk: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for row in &pk_rows {
+      pk.insert(row.try_get("column_name").map_err(driver_err)?);
+    }
+
+    let rows = sqlx::query(
+      "SELECT column_name, data_type, is_nullable FROM information_schema.columns \
+       WHERE table_schema = $1 AND table_name = $2 ORDER BY ordinal_position",
+    )
+    .bind(schema)
+    .bind(relation)
+    .fetch_all(&self.pool)
+    .await
+    .map_err(driver_err)?;
+
+    let mut columns = Vec::with_capacity(rows.len());
+    for row in &rows {
+      let name: String = row.try_get("column_name").map_err(driver_err)?;
+      let data_type: String = row.try_get("data_type").map_err(driver_err)?;
+      let is_nullable: String = row.try_get("is_nullable").map_err(driver_err)?;
+      columns.push(catalog::Column {
+        primary_key: pk.contains(&name),
+        nullable: is_nullable == "YES",
+        name,
+        data_type,
+      });
+    }
+    Ok(columns)
+  }
+
+  /// Foreign keys of `schema.relation` from `pg_catalog`. `unnest(conkey,
+  /// confkey) WITH ORDINALITY` pairs local and referenced columns in order, so
+  /// composite keys fold correctly (the `information_schema` route mispairs
+  /// them). The reference carries its own schema — Postgres FKs can be
+  /// cross-schema.
+  async fn introspect_foreign_keys(&self, schema: &str, relation: &str) -> Result<Vec<catalog::ForeignKey>> {
+    let rows = sqlx::query(
+      "SELECT con.conname AS constraint_name, \
+              att.attname AS column_name, \
+              ref_ns.nspname AS ref_schema, \
+              ref_cl.relname AS ref_table, \
+              ref_att.attname AS ref_column \
+       FROM pg_constraint con \
+       JOIN pg_class cl ON cl.oid = con.conrelid \
+       JOIN pg_namespace ns ON ns.oid = cl.relnamespace \
+       JOIN pg_class ref_cl ON ref_cl.oid = con.confrelid \
+       JOIN pg_namespace ref_ns ON ref_ns.oid = ref_cl.relnamespace \
+       JOIN LATERAL unnest(con.conkey, con.confkey) WITH ORDINALITY AS u(att, refatt, ord) ON true \
+       JOIN pg_attribute att ON att.attrelid = con.conrelid AND att.attnum = u.att \
+       JOIN pg_attribute ref_att ON ref_att.attrelid = con.confrelid AND ref_att.attnum = u.refatt \
+       WHERE con.contype = 'f' AND ns.nspname = $1 AND cl.relname = $2 \
+       ORDER BY con.conname, u.ord",
+    )
+    .bind(schema)
+    .bind(relation)
+    .fetch_all(&self.pool)
+    .await
+    .map_err(driver_err)?;
+
+    let mut foreign_keys: Vec<catalog::ForeignKey> = Vec::new();
+    let mut current: Option<String> = None;
+    for row in &rows {
+      let constraint: String = row.try_get("constraint_name").map_err(driver_err)?;
+      let from: String = row.try_get("column_name").map_err(driver_err)?;
+      let ref_schema: String = row.try_get("ref_schema").map_err(driver_err)?;
+      let ref_table: String = row.try_get("ref_table").map_err(driver_err)?;
+      let to: String = row.try_get("ref_column").map_err(driver_err)?;
+
+      if current.as_deref() == Some(constraint.as_str()) {
+        if let Some(fk) = foreign_keys.last_mut() {
+          fk.columns.push(from);
+          fk.references.columns.push(to);
+        }
+      } else {
+        current = Some(constraint.clone());
+        foreign_keys.push(catalog::ForeignKey {
+          name: Some(constraint),
+          columns: vec![from],
+          references: catalog::Reference {
+            schema: Some(ref_schema),
+            relation: ref_table,
+            columns: vec![to],
+          },
+        });
+      }
+    }
+    Ok(foreign_keys)
   }
 }
 

@@ -9,7 +9,7 @@ use std::str::FromStr;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePool};
 use sqlx::Executor as _;
 use tempfile::NamedTempFile;
-use vellum::driver::{Driver, SqliteDriver};
+use vellum::driver::{Capabilities, Driver, SqliteDriver};
 use vellum::model::catalog::RelationKind;
 use vellum::model::{Backend, TypeKind, Value};
 
@@ -47,11 +47,26 @@ async fn seeded_driver() -> (SqliteDriver, NamedTempFile) {
 async fn connect_then_select_literal_one() {
   let (driver, _db) = seeded_driver().await;
   let result = driver.query("select 1").await.expect("query select 1");
-  assert_eq!(driver.kind(), Backend::Sqlite);
+  assert_eq!(driver.backend(), Backend::Sqlite);
   assert_eq!(result.columns.len(), 1);
   assert_eq!(result.rows.len(), 1);
   assert_eq!(result.rows[0][0], Value::Int(1));
   assert_eq!(result.affected, None);
+}
+
+#[tokio::test]
+async fn sqlite_capabilities() {
+  // The frozen port's per-backend feature gate: SQLite has EXPLAIN and foreign
+  // keys, but a single schema (no `schemas` level in the sidebar).
+  let (driver, _db) = seeded_driver().await;
+  assert_eq!(
+    driver.capabilities(),
+    Capabilities {
+      explain: true,
+      schemas: false,
+      foreign_keys: true,
+    }
+  );
 }
 
 #[tokio::test]
@@ -232,7 +247,7 @@ async fn open_readonly_opens_a_file_by_literal_path() {
     .query("select label from items")
     .await
     .expect("query the path-opened db");
-  assert_eq!(driver.kind(), Backend::Sqlite);
+  assert_eq!(driver.backend(), Backend::Sqlite);
   assert_eq!(result.rows.len(), 1);
   assert_eq!(result.rows[0][0], Value::Text("alpha".to_string()));
 }
@@ -515,7 +530,8 @@ async fn sqlite_introspection_keeps_an_explicit_empty_named_target_column() {
 mod postgres_it {
   use sqlx::postgres::PgPoolOptions;
   use sqlx::{Executor as _, PgPool};
-  use vellum::driver::{Driver, PostgresDriver};
+  use vellum::driver::{Capabilities, Driver, PostgresDriver};
+  use vellum::model::catalog::RelationKind;
   use vellum::model::{Backend, Value};
 
   /// The PG DSN — from `VELLUM_IT_PG_DSN`, or a standard local default so the
@@ -559,7 +575,7 @@ mod postgres_it {
       .expect("seed row");
 
     let driver = PostgresDriver::connect(&dsn()).await.expect("connect read-only");
-    assert_eq!(driver.kind(), Backend::Postgres);
+    assert_eq!(driver.backend(), Backend::Postgres);
 
     let result = driver.query("select * from it_types").await.expect("query it_types");
     assert_eq!(result.rows.len(), 1);
@@ -681,6 +697,71 @@ mod postgres_it {
       .expect("count rows");
     assert_eq!(count, 0, "no row may be written after a poison attempt");
   }
+
+  #[tokio::test]
+  async fn pg_capabilities() {
+    // Postgres is the backend with real schemas — the frozen capability gates
+    // the sidebar's schema level on.
+    let driver = PostgresDriver::connect(&dsn()).await.expect("connect read-only");
+    assert_eq!(
+      driver.capabilities(),
+      Capabilities {
+        explain: true,
+        schemas: true,
+        foreign_keys: true,
+      }
+    );
+  }
+
+  #[tokio::test]
+  async fn pg_introspection_returns_schema_tables_columns_pk_fk() {
+    let pool = seed_pool().await;
+    // A dedicated schema isolates this test (Postgres has real schemas).
+    pool
+      .execute("drop schema if exists it_vellum cascade")
+      .await
+      .expect("drop schema");
+    pool.execute("create schema it_vellum").await.expect("create schema");
+    pool
+      .execute("create table it_vellum.users (id int primary key, email text not null, bio text)")
+      .await
+      .expect("create users");
+    pool
+      .execute(
+        "create table it_vellum.orders (id int primary key, \
+         user_id int not null references it_vellum.users(id), total double precision)",
+      )
+      .await
+      .expect("create orders");
+    pool
+      .execute("create view it_vellum.recent as select id, user_id from it_vellum.orders")
+      .await
+      .expect("create view");
+
+    let driver = PostgresDriver::connect(&dsn()).await.expect("connect read-only");
+    let catalog = driver.introspect().await.expect("introspect the schema");
+    let db = catalog.databases.first().expect("one database");
+    let schema = db.schema("it_vellum").expect("schema it_vellum");
+
+    let users = schema.relation("users").expect("relation users");
+    assert_eq!(users.kind, RelationKind::Table);
+    assert!(users.column("id").expect("id").primary_key, "id is the PK");
+    assert!(!users.column("email").expect("email").nullable, "email is NOT NULL");
+    assert!(users.column("bio").expect("bio").nullable, "bio admits NULL");
+
+    let recent = schema.relation("recent").expect("relation recent");
+    assert_eq!(recent.kind, RelationKind::View);
+
+    let orders = schema.relation("orders").expect("relation orders");
+    assert_eq!(orders.foreign_keys.len(), 1);
+    let fk = &orders.foreign_keys[0];
+    assert_eq!(fk.columns, ["user_id"]);
+    assert_eq!(fk.references.relation, "users");
+    assert_eq!(fk.references.columns, ["id"]);
+    // The FK resolves (same-schema reference carries its schema).
+    let target = db.resolve(fk, "it_vellum").expect("the FK resolves");
+    assert_eq!(target.name, "users");
+  }
 }
 
 /// MySQL integration tests — behind the `it-db` feature (default `cargo test`
@@ -696,7 +777,7 @@ mod postgres_it {
 mod mysql_it {
   use sqlx::mysql::MySqlPoolOptions;
   use sqlx::{Executor as _, MySqlPool};
-  use vellum::driver::{Driver, MySqlDriver};
+  use vellum::driver::{Capabilities, Driver, MySqlDriver};
   use vellum::model::catalog::RelationKind;
   use vellum::model::{Backend, Value};
 
@@ -738,7 +819,7 @@ mod mysql_it {
       .expect("seed row");
 
     let driver = MySqlDriver::connect(&dsn()).await.expect("connect read-only");
-    assert_eq!(driver.kind(), Backend::MySql);
+    assert_eq!(driver.backend(), Backend::MySql);
 
     let result = driver.query("select * from it_types").await.expect("query it_types");
     assert_eq!(result.rows.len(), 1);
@@ -868,5 +949,19 @@ mod mysql_it {
     assert_eq!(fk.columns, ["user_id"]);
     assert_eq!(fk.references.relation, "it_users");
     assert_eq!(fk.references.columns, ["id"]);
+  }
+
+  #[tokio::test]
+  async fn mysql_capabilities() {
+    // MySQL: EXPLAIN and foreign keys, but database = schema (no schema level).
+    let driver = MySqlDriver::connect(&dsn()).await.expect("connect read-only");
+    assert_eq!(
+      driver.capabilities(),
+      Capabilities {
+        explain: true,
+        schemas: false,
+        foreign_keys: true,
+      }
+    );
   }
 }
