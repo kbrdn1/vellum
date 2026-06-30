@@ -77,13 +77,23 @@ pub(crate) fn ensure_single_read_query(dialect: &dyn Dialect, sql: &str) -> Resu
 /// (table or file write), or a data-modifying CTE that `sqlparser` models as a
 /// `Query` with an `INSERT`/`UPDATE`/`DELETE` body — is **not** read-only.
 fn query_is_read_only(query: &Query) -> bool {
-  set_expr_is_read_only(&query.body)
+  // The `WITH` clause's CTEs must each be read-only too: a data-modifying CTE
+  // (`WITH w AS (INSERT … RETURNING *) SELECT * FROM w`) has a read-only body
+  // but writes inside the CTE. (Postgres' per-query READ ONLY tx also catches
+  // this, but the parser guard must be fail-closed on its own.)
+  let with_is_read_only = query
+    .with
+    .as_ref()
+    .is_none_or(|with| with.cte_tables.iter().all(|cte| query_is_read_only(&cte.query)));
+  with_is_read_only && set_expr_is_read_only(&query.body)
 }
 
 fn set_expr_is_read_only(expr: &SetExpr) -> bool {
   match expr {
     SetExpr::Select(select) => select.into.is_none(),
-    SetExpr::Query(query) => set_expr_is_read_only(&query.body),
+    // Recurse through `query_is_read_only` (not just the body) so a nested
+    // subquery's own `WITH` is validated too.
+    SetExpr::Query(query) => query_is_read_only(query),
     SetExpr::SetOperation { left, right, .. } => set_expr_is_read_only(left) && set_expr_is_read_only(right),
     SetExpr::Values(_) | SetExpr::Table(_) => true,
     // `Insert` / `Update` / `Delete` bodies (data-modifying CTEs) and any
@@ -209,6 +219,21 @@ mod tests {
         "a data-modifying CTE must be refused on the read path: {sql}"
       );
     }
+  }
+
+  #[test]
+  fn refuses_a_writing_cte_under_a_read_only_body() {
+    // The classic Postgres data-modifying CTE — the body is a plain `SELECT`,
+    // but a CTE in the `WITH` clause writes. The whitelist must validate the
+    // CTEs, not just the body (else it relies solely on the engine backstop).
+    assert!(
+      ensure_single_read_query(
+        &PostgreSqlDialect {},
+        "WITH w AS (INSERT INTO t VALUES (1) RETURNING *) SELECT * FROM w"
+      )
+      .is_err(),
+      "a writing CTE under a read-only body must be refused"
+    );
   }
 
   #[test]

@@ -942,7 +942,13 @@ mod mysql_it {
       .execute("create table it_wf_guard (x int)")
       .await
       .expect("create table");
-    // A data-modifying stored function needs the binlog trust flag.
+    // A data-modifying stored function needs the binlog trust flag — a *global*
+    // server setting. Save it and restore it afterwards so the test leaves no
+    // trace on a shared server.
+    let original_trust: i64 = sqlx::query_scalar("select @@global.log_bin_trust_function_creators")
+      .fetch_one(&pool)
+      .await
+      .expect("read the trust flag");
     pool
       .execute("set global log_bin_trust_function_creators = 1")
       .await
@@ -958,15 +964,22 @@ mod mysql_it {
 
     let driver = MySqlDriver::connect(&dsn()).await.expect("connect read-only");
     let outcome = driver.query("select it_wf()").await;
-    assert!(
-      outcome.is_err(),
-      "a writing function via SELECT must be refused on the read path"
-    );
-
     let count: i64 = sqlx::query_scalar("select count(*) from it_wf_guard")
       .fetch_one(&pool)
       .await
       .expect("count rows");
+
+    // Restore the global flag *before* asserting, so a failure can't leave the
+    // server in a relaxed state.
+    pool
+      .execute(format!("set global log_bin_trust_function_creators = {original_trust}").as_str())
+      .await
+      .expect("restore the trust flag");
+
+    assert!(
+      outcome.is_err(),
+      "a writing function via SELECT must be refused on the read path"
+    );
     assert_eq!(count, 0, "the refused function must not have inserted a row");
   }
 
@@ -1061,5 +1074,55 @@ mod mysql_it {
       "TIME → conservative marker, got {:?}",
       result.rows[0][0]
     );
+  }
+
+  #[tokio::test]
+  async fn mysql_introspection_carries_a_cross_database_fk_schema() {
+    // A MySQL foreign key can reference a table in another database (= schema).
+    // The reference must carry that schema, not silently claim same-schema.
+    let pool = seed_pool().await;
+    pool.execute("drop table if exists it_child").await.expect("drop child");
+    pool
+      .execute("drop database if exists it_other")
+      .await
+      .expect("drop other db");
+    pool.execute("create database it_other").await.expect("create other db");
+    pool
+      .execute("create table it_other.parent (id int primary key)")
+      .await
+      .expect("create parent");
+    pool
+      .execute("create table it_child (pid int, foreign key (pid) references it_other.parent(id))")
+      .await
+      .expect("create child with a cross-db FK");
+
+    let driver = MySqlDriver::connect(&dsn()).await.expect("connect read-only");
+    let catalog = driver.introspect().await.expect("introspect the schema");
+    let child = catalog
+      .databases
+      .first()
+      .unwrap()
+      .schemas
+      .first()
+      .unwrap()
+      .relation("it_child")
+      .expect("relation it_child");
+    assert_eq!(child.foreign_keys.len(), 1);
+    let fk = &child.foreign_keys[0];
+    assert_eq!(fk.references.relation, "parent");
+    assert_eq!(
+      fk.references.schema.as_deref(),
+      Some("it_other"),
+      "a cross-database FK must carry the referenced schema"
+    );
+
+    pool
+      .execute("drop table if exists it_child")
+      .await
+      .expect("cleanup child");
+    pool
+      .execute("drop database if exists it_other")
+      .await
+      .expect("cleanup other db");
   }
 }

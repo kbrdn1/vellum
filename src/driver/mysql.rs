@@ -128,6 +128,7 @@ impl MySqlDriver {
     let rows = sqlx::query(
       "SELECT CONVERT(CONSTRAINT_NAME USING utf8mb4) AS CONSTRAINT_NAME, \
               CONVERT(COLUMN_NAME USING utf8mb4) AS COLUMN_NAME, \
+              CONVERT(REFERENCED_TABLE_SCHEMA USING utf8mb4) AS REFERENCED_TABLE_SCHEMA, \
               CONVERT(REFERENCED_TABLE_NAME USING utf8mb4) AS REFERENCED_TABLE_NAME, \
               CONVERT(REFERENCED_COLUMN_NAME USING utf8mb4) AS REFERENCED_COLUMN_NAME \
        FROM information_schema.KEY_COLUMN_USAGE \
@@ -144,6 +145,9 @@ impl MySqlDriver {
     for row in &rows {
       let constraint: String = row.try_get("CONSTRAINT_NAME").map_err(driver_err)?;
       let from: String = row.try_get("COLUMN_NAME").map_err(driver_err)?;
+      // MySQL foreign keys can cross databases (= schemas), so carry the
+      // referenced schema rather than assuming same-schema.
+      let ref_schema: String = row.try_get("REFERENCED_TABLE_SCHEMA").map_err(driver_err)?;
       let referenced: String = row.try_get("REFERENCED_TABLE_NAME").map_err(driver_err)?;
       let to: String = row.try_get("REFERENCED_COLUMN_NAME").map_err(driver_err)?;
 
@@ -158,7 +162,7 @@ impl MySqlDriver {
           name: Some(constraint),
           columns: vec![from],
           references: catalog::Reference {
-            schema: None,
+            schema: Some(ref_schema),
             relation: referenced,
             columns: vec![to],
           },
