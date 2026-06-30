@@ -17,6 +17,7 @@ use crate::model::QueryResult;
 use crate::tui::state::editor::EditorState;
 use crate::tui::state::paginate::{PageRequest, Paginator, DEFAULT_PAGE_SIZE};
 use crate::tui::state::sidebar::{RelationRef, SidebarState};
+use crate::tui::state::sort::{toggle_sort, Sort};
 use crate::tui::state::table::TableState;
 
 /// Which pane has keyboard focus.
@@ -27,9 +28,10 @@ pub enum Focus {
   Table,
 }
 
-/// App state: the result table, an optional schema sidebar, the focused pane,
-/// a pending open-browse intent, the browse pagination cursor (browse mode
-/// only) plus its pending page request, and the quit flag.
+/// App state: the result table, the optional side panes (schema sidebar / SQL
+/// editor), the focused pane, the runtime intents (open-browse, page request,
+/// run-query, re-query), the browse pagination cursor and sort, and the quit
+/// flag. The intents are pure signals a real runtime drains and services.
 #[derive(Debug)]
 pub struct App {
   table: TableState,
@@ -40,6 +42,8 @@ pub struct App {
   paginator: Option<Paginator>,
   page_request: Option<PageRequest>,
   run_query: Option<String>,
+  sort: Option<Sort>,
+  requery: bool,
   quit: bool,
 }
 
@@ -56,6 +60,8 @@ impl App {
       paginator: None,
       page_request: None,
       run_query: None,
+      sort: None,
+      requery: false,
       quit: false,
     }
   }
@@ -78,6 +84,8 @@ impl App {
       paginator: Some(Paginator::new(DEFAULT_PAGE_SIZE)),
       page_request: None,
       run_query: None,
+      sort: None,
+      requery: false,
       quit: false,
     }
   }
@@ -100,6 +108,8 @@ impl App {
       paginator: None,
       page_request: None,
       run_query: None,
+      sort: None,
+      requery: false,
       quit: false,
     }
   }
@@ -162,6 +172,17 @@ impl App {
     self.paginator.as_ref().map(Paginator::counter)
   }
 
+  /// The active browse sort, if any (read-only, for the view and the page query).
+  pub fn sort(&self) -> Option<&Sort> {
+    self.sort.as_ref()
+  }
+
+  /// Take the pending re-query flag (cleared on read). Set when the sort changes;
+  /// the runtime re-fetches page 0 of the open relation with the new `ORDER BY`.
+  pub fn take_requery(&mut self) -> bool {
+    std::mem::take(&mut self.requery)
+  }
+
   /// Feed a freshly-fetched page (up to `limit` rows, the last being the probe)
   /// into the table. Records the fetched count so the counter and `has_next` are
   /// known, and trims the probe row off the display. No-op in one-shot mode.
@@ -175,11 +196,31 @@ impl App {
 
   /// Open a relation picked in the sidebar: record the intent for the loader to
   /// fetch, and **restart pagination from page 0** — a freshly-opened relation
-  /// must not inherit the previous one's page offset or a stale page request.
+  /// must not inherit the previous one's page offset, page request, or sort
+  /// (its columns differ).
   fn open_relation(&mut self, relation: RelationRef) {
     self.browse_intent = Some(relation);
     self.paginator = Some(Paginator::new(DEFAULT_PAGE_SIZE));
     self.page_request = None;
+    self.sort = None;
+  }
+
+  /// Toggle the server-side sort on the column under the horizontal cursor
+  /// (browse only — sorting re-issues the paginated query). Cycles the column
+  /// ascending → descending → off, restarts pagination from page 0, and raises
+  /// the re-query flag. No-op outside browse or on an empty result.
+  fn sort_current_column(&mut self) {
+    if self.paginator.is_none() {
+      return; // sort is a server-side re-query — browse mode only
+    }
+    let column = match self.table.columns().get(self.table.col_offset()) {
+      Some(column) => column.name.clone(),
+      None => return, // no columns to sort
+    };
+    self.sort = toggle_sort(self.sort.take(), &column);
+    self.paginator = Some(Paginator::new(DEFAULT_PAGE_SIZE));
+    self.page_request = None;
+    self.requery = true;
   }
 
   /// Move the browse cursor a page if that page exists, recording the request
@@ -229,11 +270,13 @@ impl App {
             self.open_relation(relation);
           }
         }
-        // In the table pane, `n`/`p` page the browse cursor; everything else is
-        // vim table navigation. In one-shot mode `request_page` is inert.
+        // In the table pane, `n`/`p` page the browse cursor and `s` sorts the
+        // current column; everything else is vim table navigation. In one-shot
+        // mode `request_page` / `sort_current_column` are inert.
         Focus::Table => match key {
           'n' => self.request_page(PageRequest::Next),
           'p' => self.request_page(PageRequest::Prev),
+          's' => self.sort_current_column(),
           _ => on_table_key(&mut self.table, key),
         },
         // Handled by the early return above.
