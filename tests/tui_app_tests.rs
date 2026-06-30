@@ -109,3 +109,165 @@ fn navigation_on_empty_result_stays_in_bounds() {
   assert_eq!(app.table().col_offset(), 0);
   assert!(!app.should_quit());
 }
+
+// ── Schema sidebar (#14) ──────────────────────────────────────────────────
+
+use vellum::driver::Capabilities;
+use vellum::model::catalog::{Catalog, Column as CatColumn, Database, Relation, RelationKind, Schema};
+use vellum::tui::app::Focus;
+use vellum::tui::state::sidebar::RelationRef;
+
+fn cat_column(name: &str) -> CatColumn {
+  CatColumn {
+    name: name.into(),
+    data_type: "int".into(),
+    nullable: true,
+    primary_key: false,
+  }
+}
+
+/// A catalog: database `app`, schema `public`, tables `users(id, email)` and
+/// `orders(id)`.
+fn catalog() -> Catalog {
+  Catalog {
+    databases: vec![Database {
+      name: "app".into(),
+      schemas: vec![Schema {
+        name: "public".into(),
+        relations: vec![
+          Relation {
+            name: "users".into(),
+            kind: RelationKind::Table,
+            columns: vec![cat_column("id"), cat_column("email")],
+            foreign_keys: vec![],
+          },
+          Relation {
+            name: "orders".into(),
+            kind: RelationKind::Table,
+            columns: vec![cat_column("id")],
+            foreign_keys: vec![],
+          },
+        ],
+      }],
+    }],
+  }
+}
+
+fn caps(schemas: bool) -> Capabilities {
+  Capabilities {
+    explain: true,
+    schemas,
+    foreign_keys: true,
+  }
+}
+
+#[test]
+fn browse_starts_focused_on_the_sidebar() {
+  let app = App::browse(catalog(), caps(true));
+  assert_eq!(app.focus(), Focus::Sidebar);
+  assert!(app.sidebar().is_some(), "browse mode has a sidebar");
+  // Collapsed: only the database row is visible.
+  assert_eq!(app.sidebar().unwrap().visible_nodes().len(), 1);
+}
+
+#[test]
+fn tab_toggles_focus_between_sidebar_and_table() {
+  let mut app = App::browse(catalog(), caps(true));
+  app.on_key('\t');
+  assert_eq!(app.focus(), Focus::Table);
+  app.on_key('\t');
+  assert_eq!(app.focus(), Focus::Sidebar);
+}
+
+#[test]
+fn tab_does_nothing_in_one_shot_mode() {
+  // No sidebar to focus — `Tab` is inert, focus stays on the table.
+  let mut app = App::new(grid(2, 3));
+  assert_eq!(app.focus(), Focus::Table);
+  app.on_key('\t');
+  assert_eq!(app.focus(), Focus::Table);
+}
+
+#[test]
+fn space_expands_then_collapses_a_database() {
+  let mut app = App::browse(catalog(), caps(true));
+  let nodes = |app: &App| app.sidebar().unwrap().visible_nodes().len();
+  assert_eq!(nodes(&app), 1, "collapsed: just the database");
+  app.on_key(' ');
+  assert_eq!(nodes(&app), 2, "expanded: the database + its `public` schema");
+  app.on_key(' ');
+  assert_eq!(nodes(&app), 1, "collapsed again");
+}
+
+#[test]
+fn enter_on_a_relation_emits_the_open_browse_intent() {
+  // Schema level hidden (SQLite/MySQL): the database expands straight to its
+  // relations, but the intent still carries the schema the browse query needs.
+  let mut app = App::browse(catalog(), caps(false));
+  app.on_key(' '); // expand the database → [app, users, orders]
+  app.on_key('j'); // move onto `users`
+  assert!(
+    app.take_browse_intent().is_none(),
+    "no intent until a relation is opened"
+  );
+  app.on_key('\n'); // open it
+  assert_eq!(
+    app.take_browse_intent(),
+    Some(RelationRef {
+      database: "app".into(),
+      schema: "public".into(),
+      relation: "users".into(),
+    })
+  );
+  assert!(app.take_browse_intent().is_none(), "intent is cleared on read");
+}
+
+#[test]
+fn without_schemas_the_schema_row_is_hidden() {
+  // With `schemas: false` the database expands directly to relations — no
+  // schema row — so two relations + the database = three visible nodes.
+  let mut app = App::browse(catalog(), caps(false));
+  app.on_key(' ');
+  let labels: Vec<String> = app
+    .sidebar()
+    .unwrap()
+    .visible_nodes()
+    .iter()
+    .map(|n| n.label.clone())
+    .collect();
+  assert_eq!(labels, ["app", "users", "orders"], "no `public` row, got {labels:?}");
+}
+
+#[test]
+fn with_schemas_the_schema_row_is_shown() {
+  let mut app = App::browse(catalog(), caps(true));
+  app.on_key(' '); // expand database → schema row appears
+  app.on_key('j'); // onto `public`
+  app.on_key(' '); // expand schema → relations appear
+  let labels: Vec<String> = app
+    .sidebar()
+    .unwrap()
+    .visible_nodes()
+    .iter()
+    .map(|n| n.label.clone())
+    .collect();
+  assert_eq!(labels, ["app", "public", "users", "orders"]);
+}
+
+#[test]
+fn sidebar_cursor_clamps_at_both_ends() {
+  let mut app = App::browse(catalog(), caps(false));
+  app.on_key(' '); // [app, users, orders]
+  for _ in 0..5 {
+    app.on_key('j');
+  }
+  assert_eq!(
+    app.sidebar().unwrap().selected(),
+    2,
+    "cursor must not run past the last node"
+  );
+  for _ in 0..5 {
+    app.on_key('k');
+  }
+  assert_eq!(app.sidebar().unwrap().selected(), 0, "cursor must not go negative");
+}

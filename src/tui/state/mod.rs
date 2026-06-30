@@ -1,5 +1,6 @@
 //! TUI state modules — pure, ratatui-free state machines that sit behind the
-//! view. Phase 0 ships only the result-table state; more panes (schema sidebar,
-//! diff view) land in later phases as sibling modules.
+//! view. The result-table state shipped in Phase 0; the schema sidebar (#14)
+//! is the second pane; the diff view lands in a later phase.
 
+pub mod sidebar;
 pub mod table;
