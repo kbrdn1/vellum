@@ -1,14 +1,16 @@
 //! The PostgreSQL `Driver` — the second impl (Phase 1, #10), behind the same
-//! port as SQLite. Read-only by construction: the shared parser guard plus a
-//! `default_transaction_read_only` session. The parser guard alone is *not*
-//! enough for PG — a data-modifying CTE
+//! port as SQLite. Read-only by construction in two layers: the shared parser
+//! guard, then an explicit transaction-level `READ ONLY` around every query.
+//! The parser guard alone is *not* enough for PG — a data-modifying CTE
 //! (`WITH t AS (INSERT … RETURNING *) SELECT * FROM t`) parses as a single
-//! `Query` yet writes — so the session backstop is load-bearing.
+//! `Query` yet writes, and a SELECT can flip the session read-only default
+//! (`set_config`) — so the per-query READ ONLY transaction is the load-bearing
+//! boundary (the session default is only defence in depth).
 
 use std::str::FromStr;
 
 use async_trait::async_trait;
-use sqlx::postgres::{PgConnectOptions, PgPool, PgRow};
+use sqlx::postgres::{PgConnectOptions, PgPool, PgPoolOptions, PgRow};
 // Trait methods imported anonymously to avoid colliding with the domain
 // `Column` / `Row` types.
 use sqlx::{Column as _, Row as _, TypeInfo as _, ValueRef as _};
@@ -27,26 +29,49 @@ pub struct PostgresDriver {
 #[async_trait]
 impl Driver for PostgresDriver {
   async fn connect(dsn: &str) -> Result<Self> {
-    // Read-only by construction: every implicit transaction on this session
-    // defaults to READ ONLY, so a write that slips past the parser guard (a
-    // data-modifying CTE) is still refused by the server. A lone
-    // `SET … read_only = off` can't re-enable writes through `query()` — it's
-    // not a `Query`, so the guard refuses it, and a multi-statement payload is
-    // refused too. `sslmode` from the DSN is honoured by `PgConnectOptions`
-    // (a rustls backend is compiled in). Intentional writes go through the
-    // gated write/diff path (#64).
+    // `default_transaction_read_only = on` is defence in depth — NOT the real
+    // guard. It is session-scoped and a SELECT can flip it
+    // (`select set_config('default_transaction_read_only','off',false)`), so
+    // the actual write boundary is the per-query transaction-level READ ONLY in
+    // `query()`. `sslmode` from the DSN is honoured by `PgConnectOptions` (a
+    // rustls backend is compiled in). Intentional writes go through the gated
+    // write/diff path (#64).
     let options = PgConnectOptions::from_str(dsn)
       .map_err(driver_err)?
       .options([("default_transaction_read_only", "on")]);
-    let pool = PgPool::connect_with(options).await.map_err(driver_err)?;
+    // A single connection: one interactive read-only client to one database
+    // needs no pool concurrency, and a single session avoids the divergence
+    // where a `SET` lands on one pooled connection but not another.
+    let pool = PgPoolOptions::new()
+      .max_connections(1)
+      .connect_with(options)
+      .await
+      .map_err(driver_err)?;
     Ok(Self { pool })
   }
 
   async fn query(&self, sql: &str) -> Result<QueryResult> {
-    // Primary guard — necessary but not sufficient for PG; the read-only
-    // session (see `connect`) is the backstop for data-modifying CTEs.
+    // Two-layer write guard:
+    //   (1) The parser guard rejects anything that isn't a single `Query`. It
+    //       is necessary but NOT sufficient for PG: a data-modifying CTE parses
+    //       as a `Query`, and a SELECT can flip the *session* read-only default
+    //       (`select set_config('default_transaction_read_only','off',false)`),
+    //       which a reused pooled connection would inherit.
+    //   (2) So run every query inside an explicit transaction-level READ ONLY.
+    //       That can't be undone by a single statement: a write (incl. a
+    //       data-modifying CTE) errors, and a `set_config` flip only changes
+    //       *future* transactions — each re-wrapped READ ONLY here. The session
+    //       default (set in `connect`) stays as defence in depth.
     ensure_single_read_query(&PostgreSqlDialect {}, sql)?;
-    let raw_rows = sqlx::query(sql).fetch_all(&self.pool).await.map_err(driver_err)?;
+    let mut tx = self.pool.begin().await.map_err(driver_err)?;
+    sqlx::query("SET TRANSACTION READ ONLY")
+      .execute(&mut *tx)
+      .await
+      .map_err(driver_err)?;
+    let raw_rows = sqlx::query(sql).fetch_all(&mut *tx).await.map_err(driver_err)?;
+    // Read-only: nothing to commit. Rollback closes the transaction (and would
+    // discard a write, if the layers above ever let one through).
+    tx.rollback().await.map_err(driver_err)?;
 
     let mut rows: Vec<Row> = Vec::with_capacity(raw_rows.len());
     for raw in &raw_rows {

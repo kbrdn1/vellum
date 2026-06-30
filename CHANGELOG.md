@@ -19,10 +19,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   (sqlx, rustls — `sslmode` honoured from the DSN, no OpenSSL system dep). Read-only
   by construction with **two layers**: the shared single-`SELECT` parser guard
   (now `driver::ensure_single_read_query`, parametrised by the engine dialect) and
-  a `default_transaction_read_only` session — load-bearing for PG, where a
-  data-modifying CTE (`WITH t AS (INSERT … RETURNING *) SELECT * FROM t`) parses
-  as one `Query` yet writes, so the parser guard alone is necessary but not
-  sufficient. Type mapping is conservative: bool / int2·4·8 / float4·8 / text
+  an explicit transaction-level `READ ONLY` around every query. The latter is the
+  load-bearing boundary for PG: the parser guard passes a data-modifying CTE
+  (`WITH t AS (INSERT … RETURNING *) SELECT * FROM t`, which writes), and a SELECT
+  can flip the session read-only default (`set_config`) that a reused pooled
+  connection inherits — but a transaction-level `READ ONLY` can't be undone by a
+  single statement (the session default is kept only as defence in depth; the
+  driver uses a single connection). Type mapping is conservative: bool / int2·4·8 / float4·8 / text
   family / bytea decode to their `Value`; `json`·`jsonb` → `Json`; `uuid` → `Text`;
   `timestamptz`·`timestamp`·`date`·`time` → `Timestamp`. The long tail (numeric,
   arrays, enums, …) maps to an honest non-data marker `<typename>` — never a faked

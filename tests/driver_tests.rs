@@ -638,4 +638,47 @@ mod postgres_it {
       "a DELETE must be refused on the read path"
     );
   }
+
+  #[tokio::test]
+  async fn pg_read_only_survives_a_set_config_poison() {
+    // The session `default_transaction_read_only` is bypassable on its own: a
+    // SELECT can flip it — `select set_config('default_transaction_read_only',
+    // 'off', false)` parses as a `Query`, passes the guard, and turns the
+    // session default OFF — and pooled connections are reused, so a later query
+    // inherits the poisoned session. The read path must therefore run each
+    // query in its own transaction-level READ ONLY, which a single statement
+    // can't undo. Without that, the data-modifying CTE below writes.
+    let pool = seed_pool().await;
+    pool
+      .execute("drop table if exists it_poison_guard")
+      .await
+      .expect("drop");
+    pool
+      .execute("create table it_poison_guard (x int)")
+      .await
+      .expect("create table");
+
+    let driver = PostgresDriver::connect(&dsn()).await.expect("connect read-only");
+
+    // Poison the session: disable the read-only default.
+    let _ = driver
+      .query("select set_config('default_transaction_read_only', 'off', false)")
+      .await;
+
+    // The follow-up write (reusing the poisoned pooled connection) must STILL be
+    // refused.
+    let outcome = driver
+      .query("with t as (insert into it_poison_guard values (1) returning *) select * from t")
+      .await;
+    assert!(
+      outcome.is_err(),
+      "read-only must survive a set_config poison — the write must be refused"
+    );
+
+    let count: i64 = sqlx::query_scalar("select count(*) from it_poison_guard")
+      .fetch_one(&pool)
+      .await
+      .expect("count rows");
+    assert_eq!(count, 0, "no row may be written after a poison attempt");
+  }
 }
