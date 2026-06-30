@@ -15,6 +15,20 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Phase 1 — paginated browse cursor (#15):** a pure `Paginator`
+  (`tui/state/paginate.rs`) — the LIMIT/OFFSET state for browsing a relation
+  without loading it into RAM. **No `COUNT(*)`:** the cursor over-fetches by one
+  (`limit() == page_size + 1`); the extra "probe" row, present iff the fetch
+  returned more than a page, is how a next page is known without a total. The
+  runtime reports the fetched count via `record`, which drives `has_next`, the
+  `next_page`/`prev_page` bounds, and a `"rows X-Y"` / `"no rows"` counter (the
+  probe row is never displayed). `App` browse mode wires it in: `apply_page`
+  feeds a fetched page (trimming the probe), `n`/`p` on the table pane request
+  the next/prev page (inert at the ends, on a partial last page, and in one-shot
+  mode), and `page_counter()` drives the status line. Pure cursor unit-tested in
+  `tests/paginate_tests.rs`, the `n`/`p` + counter wiring in
+  `tests/tui_app_tests.rs`; the virtualised render and the live fetch loop land
+  with the browse-runtime integration.
 - **Phase 1 — schema sidebar tree (#14):** a pure, ratatui-free `SidebarState`
   (`tui/state/sidebar.rs`) over a `Catalog` — the navigation surface the browse
   view reads. The tree (`Database → Schema → Relation → Column`) is flattened to
