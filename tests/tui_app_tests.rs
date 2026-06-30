@@ -485,3 +485,68 @@ fn one_shot_mode_has_no_pagination() {
   assert!(app.take_page_request().is_none());
   assert_eq!(app.table().rows().len(), 3, "table untouched");
 }
+
+// ── SQL editor (#16) ──────────────────────────────────────────────────────
+
+#[test]
+fn query_mode_starts_focused_on_the_editor() {
+  let app = App::query();
+  assert_eq!(app.focus(), Focus::Editor);
+  assert!(app.editor().is_some(), "query mode has an editor");
+  assert!(app.editor().unwrap().is_empty(), "the buffer starts empty");
+}
+
+#[test]
+fn typing_fills_the_editor_buffer() {
+  let mut app = App::query();
+  for c in "select 1".chars() {
+    app.on_key(c);
+  }
+  assert_eq!(app.editor().unwrap().text(), "select 1");
+}
+
+#[test]
+fn q_is_a_literal_character_in_the_editor_not_a_quit() {
+  // The global `q`-quits binding must not fire while editing text.
+  let mut app = App::query();
+  app.on_key('q');
+  assert_eq!(app.editor().unwrap().text(), "q");
+  assert!(
+    !app.should_quit(),
+    "`q` types a character in the editor, it does not quit"
+  );
+}
+
+#[test]
+fn submit_emits_a_run_query_intent_with_the_buffer_text() {
+  let mut app = App::query();
+  for c in "select * from users".chars() {
+    app.on_key(c);
+  }
+  assert!(app.take_run_query().is_none(), "no run intent until submitted");
+  app.submit_query(); // Ctrl-Enter
+  assert_eq!(app.take_run_query().as_deref(), Some("select * from users"));
+  assert!(app.take_run_query().is_none(), "intent is cleared on read");
+}
+
+#[test]
+fn tab_toggles_focus_between_editor_and_table() {
+  let mut app = App::query();
+  app.on_key('\t');
+  assert_eq!(app.focus(), Focus::Table);
+  app.on_key('\t');
+  assert_eq!(app.focus(), Focus::Editor);
+}
+
+#[test]
+fn one_shot_and_browse_have_no_editor() {
+  assert!(App::new(grid(1, 1)).editor().is_none(), "one-shot has no editor");
+  assert!(
+    App::browse(catalog(), caps(true)).editor().is_none(),
+    "browse has no editor"
+  );
+  // Submitting where there is no editor is a harmless no-op.
+  let mut app = App::new(grid(1, 1));
+  app.submit_query();
+  assert!(app.take_run_query().is_none());
+}

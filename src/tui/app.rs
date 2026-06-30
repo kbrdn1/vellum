@@ -2,15 +2,19 @@
 //! clamped state transitions, no terminal I/O — so the state machine is fully
 //! testable without ratatui (`tests/tui_app_tests.rs`).
 //!
-//! Two modes share one `App`:
-//! - **one-shot** (`App::new`, `vellum … -i`): just a result table, no sidebar.
+//! Three modes share one `App`:
+//! - **one-shot** (`App::new`, `vellum … -i`): just a result table, no panes.
 //! - **browse** (`App::browse`): a schema sidebar (#14) plus an initially-empty
-//!   result table that selecting a relation fills (#15). Focus toggles between
-//!   the two panes.
+//!   result table that selecting a relation fills (#15).
+//! - **query** (`App::query`): a multiline SQL editor (#16) over a result table;
+//!   submitting runs the buffer.
+//!
+//! Focus toggles between the table and whichever side pane the mode has.
 
 use crate::driver::Capabilities;
 use crate::model::catalog::Catalog;
 use crate::model::QueryResult;
+use crate::tui::state::editor::EditorState;
 use crate::tui::state::paginate::{PageRequest, Paginator, DEFAULT_PAGE_SIZE};
 use crate::tui::state::sidebar::{RelationRef, SidebarState};
 use crate::tui::state::table::TableState;
@@ -19,6 +23,7 @@ use crate::tui::state::table::TableState;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Focus {
   Sidebar,
+  Editor,
   Table,
 }
 
@@ -29,10 +34,12 @@ pub enum Focus {
 pub struct App {
   table: TableState,
   sidebar: Option<SidebarState>,
+  editor: Option<EditorState>,
   focus: Focus,
   browse_intent: Option<RelationRef>,
   paginator: Option<Paginator>,
   page_request: Option<PageRequest>,
+  run_query: Option<String>,
   quit: bool,
 }
 
@@ -43,10 +50,12 @@ impl App {
     Self {
       table: TableState::new(result),
       sidebar: None,
+      editor: None,
       focus: Focus::Table,
       browse_intent: None,
       paginator: None,
       page_request: None,
+      run_query: None,
       quit: false,
     }
   }
@@ -63,10 +72,34 @@ impl App {
     Self {
       table: TableState::new(empty),
       sidebar: Some(SidebarState::new(catalog, capabilities.schemas)),
+      editor: None,
       focus: Focus::Sidebar,
       browse_intent: None,
       paginator: Some(Paginator::new(DEFAULT_PAGE_SIZE)),
       page_request: None,
+      run_query: None,
+      quit: false,
+    }
+  }
+
+  /// SQL-console mode: a multiline editor over an initially-empty result table
+  /// (#16). Focus starts on the editor; `Tab` toggles editor↔table; submitting
+  /// (Ctrl-Enter) emits a run-query intent the runtime services read-only.
+  pub fn query() -> Self {
+    let empty = QueryResult {
+      columns: Vec::new(),
+      rows: Vec::new(),
+      affected: None,
+    };
+    Self {
+      table: TableState::new(empty),
+      sidebar: None,
+      editor: Some(EditorState::new()),
+      focus: Focus::Editor,
+      browse_intent: None,
+      paginator: None,
+      page_request: None,
+      run_query: None,
       quit: false,
     }
   }
@@ -79,6 +112,25 @@ impl App {
   /// The schema sidebar state, if in browse mode (read-only, for the view).
   pub fn sidebar(&self) -> Option<&SidebarState> {
     self.sidebar.as_ref()
+  }
+
+  /// The SQL editor buffer, if in query mode (read-only, for the view).
+  pub fn editor(&self) -> Option<&EditorState> {
+    self.editor.as_ref()
+  }
+
+  /// Take the pending run-query intent (cleared on read). Set by `submit_query`
+  /// (Ctrl-Enter); the runtime runs it read-only and replaces the result table.
+  pub fn take_run_query(&mut self) -> Option<String> {
+    self.run_query.take()
+  }
+
+  /// Submit the editor buffer to be run (Ctrl-Enter): emit a run-query intent
+  /// carrying the current text. No-op when there is no editor.
+  pub fn submit_query(&mut self) {
+    if let Some(editor) = self.editor.as_ref() {
+      self.run_query = Some(editor.text());
+    }
   }
 
   /// Which pane currently has focus.
@@ -144,21 +196,30 @@ impl App {
     }
   }
 
-  /// Apply a key press. `q` quits; `Tab` toggles focus between the sidebar and
-  /// the table (only when a sidebar exists); every other key routes to the
-  /// focused pane. The crossterm loop maps the arrow keys / Enter onto these
+  /// Apply a key press. The crossterm loop maps arrow keys / Enter onto these
   /// characters before calling `on_key`.
+  ///
+  /// In the **editor** pane every printable key is text — `q` types `q`, it does
+  /// not quit (the runtime maps Esc → quit and Ctrl-Enter → [`submit_query`]
+  /// there); only `Tab` is intercepted, to cycle focus. Outside the editor, `q`
+  /// quits and `Tab` toggles focus; other keys route to the focused pane.
+  ///
+  /// [`submit_query`]: Self::submit_query
   pub fn on_key(&mut self, key: char) {
-    match key {
-      'q' => self.quit = true,
-      '\t' => {
-        if self.sidebar.is_some() {
-          self.focus = match self.focus {
-            Focus::Sidebar => Focus::Table,
-            Focus::Table => Focus::Sidebar,
-          };
+    if self.focus == Focus::Editor {
+      match key {
+        '\t' => self.toggle_focus(),
+        c => {
+          if let Some(editor) = self.editor.as_mut() {
+            editor.insert(c);
+          }
         }
       }
+      return;
+    }
+    match key {
+      'q' => self.quit = true,
+      '\t' => self.toggle_focus(),
       _ => match self.focus {
         Focus::Sidebar => {
           // Resolve the opened relation (if any) before touching `self` again —
@@ -175,8 +236,28 @@ impl App {
           'p' => self.request_page(PageRequest::Prev),
           _ => on_table_key(&mut self.table, key),
         },
+        // Handled by the early return above.
+        Focus::Editor => {}
       },
     }
+  }
+
+  /// Cycle focus to the next pane: a side pane (sidebar or editor) toggles with
+  /// the table; the table toggles back to whichever side pane the mode has. In
+  /// one-shot mode (no side pane) focus stays on the table.
+  fn toggle_focus(&mut self) {
+    self.focus = match self.focus {
+      Focus::Sidebar | Focus::Editor => Focus::Table,
+      Focus::Table => {
+        if self.sidebar.is_some() {
+          Focus::Sidebar
+        } else if self.editor.is_some() {
+          Focus::Editor
+        } else {
+          Focus::Table
+        }
+      }
+    };
   }
 }
 

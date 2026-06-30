@@ -15,6 +15,20 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Phase 1 — SQL editor buffer (#16):** a pure, ratatui-free `EditorState`
+  (`tui/state/editor.rs`) — a flat `Vec<char>` + one cursor index, with insert /
+  backspace / left / right / text. A newline is just a `'\n'`, so multiline falls
+  out without line bookkeeping. `App` grows a third mode, **query**
+  (`App::query`): the editor over an initially-empty result table, focus starting
+  on the editor and `Tab` cycling editor↔table (the focus toggle generalised so
+  one-shot stays put, browse keeps sidebar↔table, query gets editor↔table). In
+  the editor pane every printable key is text — `q` types `q`, it does not quit —
+  and `submit_query` (Ctrl-Enter) emits a run-query intent (`take_run_query`)
+  carrying the buffer, the analogue of the browse open-intent. Pure buffer
+  unit-tested in `tests/editor_tests.rs`, the query-mode wiring in
+  `tests/tui_app_tests.rs`; the rendered editor widget, the Esc/Ctrl-Enter key
+  mapping, and running the query against the driver land with the TUI runtime
+  integration.
 - **Phase 1 — paginated browse cursor (#15):** a pure `Paginator`
   (`tui/state/paginate.rs`) — the LIMIT/OFFSET state for browsing a relation
   without loading it into RAM. **No `COUNT(*)`:** the cursor over-fetches by one
