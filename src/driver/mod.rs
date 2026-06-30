@@ -28,16 +28,21 @@ use crate::model::{Backend, Catalog, QueryResult};
 /// read-only query before it reaches the database. The `dialect` is the
 /// engine's own so the parse matches what the server would accept.
 ///
-/// This is the **primary** write-safety boundary, and it also refuses
-/// `SELECT … INTO` (a table or file write that wears a `Query`'s clothes, found
-/// anywhere in the set expression). But it is *necessary, not sufficient*:
-/// Postgres allows data-modifying CTEs
-/// (`WITH t AS (INSERT … RETURNING *) SELECT * FROM t`) whose top level parses
-/// as a `Query` yet still writes. Each impl pairs this with an engine-level
-/// backstop (SQLite opens `SQLITE_OPEN_READONLY`; Postgres wraps every query in
-/// a `READ ONLY` transaction; MySQL sets the session `transaction_read_only`),
-/// so a write that slips past the parser is still refused. Intentional writes
-/// go through the gated write/diff path (#64).
+/// This is **best-effort early rejection, not the write-safety guarantee** — no
+/// parser can catch every side effect (a function that writes, `nextval()`, …).
+/// The guarantee is the per-engine read-only **backstop**: SQLite opens
+/// `SQLITE_OPEN_READONLY`, Postgres wraps every query in a `READ ONLY`
+/// transaction, MySQL sets the session `transaction_read_only` — so a write
+/// that slips past this parser check is still refused by the engine (proven by
+/// the `*_lands_no_write` integration tests). The one backstop gap — MySQL
+/// `INTO OUTFILE`/`DUMPFILE`, a *file* write a read-only transaction does not
+/// stop — is closed here, where it must be (MySQL only allows it at the top
+/// level / a final union branch, both covered). So this guard refuses the
+/// obvious writes early (non-`Query` statements, `SELECT … INTO`, a
+/// data-modifying CTE whose body or `WITH` writes); deeper writes hidden in a
+/// subquery that no engine will execute as a write are left to the backstop
+/// rather than chased through the whole AST. Intentional writes go through the
+/// gated write/diff path (#64).
 pub(crate) fn ensure_single_read_query(dialect: &dyn Dialect, sql: &str) -> Result<()> {
   // Fail closed: run only what we can verify is one read-only statement.
   // Unparsed input is refused, never handed to the database.

@@ -832,6 +832,32 @@ mod postgres_it {
       "t_a.other_col must NOT be flagged PK — it is t_b's FK column under the same constraint name"
     );
   }
+
+  #[tokio::test]
+  async fn pg_a_write_hidden_in_a_subquery_lands_nothing() {
+    // The parser guard is best-effort; the per-query READ ONLY transaction is
+    // the guarantee. A data-modifying CTE buried in a derived table can't be a
+    // top-level write — Postgres refuses it (`must be at the top level`) — so
+    // even if the parser waves it through, nothing is written.
+    let pool = seed_pool().await;
+    pool.execute("drop table if exists it_hidden").await.expect("drop");
+    pool
+      .execute("create table it_hidden (x int)")
+      .await
+      .expect("create table");
+
+    let driver = PostgresDriver::connect(&dsn()).await.expect("connect read-only");
+    let outcome = driver
+      .query("select * from (with w as (insert into it_hidden values (1) returning *) select * from w) s")
+      .await;
+    assert!(outcome.is_err(), "a write hidden in a subquery must be refused");
+
+    let count: i64 = sqlx::query_scalar("select count(*) from it_hidden")
+      .fetch_one(&pool)
+      .await
+      .expect("count rows");
+    assert_eq!(count, 0, "no row may be written by a hidden subquery write");
+  }
 }
 
 /// MySQL integration tests — behind the `it-db` feature (default `cargo test`
@@ -953,31 +979,39 @@ mod mysql_it {
       .execute("set global log_bin_trust_function_creators = 1")
       .await
       .expect("set trust");
-    pool.execute("drop function if exists it_wf").await.expect("drop fn");
-    pool
-      .execute(
-        "create function it_wf() returns int modifies sql data \
-         begin insert into it_wf_guard values (1); return 1; end",
-      )
-      .await
-      .expect("create writing function");
+    // Everything below the SET GLOBAL may fail; capture results instead of
+    // panicking so the global is restored no matter what.
+    let result: Result<(bool, i64), String> = async {
+      pool
+        .execute("drop function if exists it_wf")
+        .await
+        .map_err(|e| e.to_string())?;
+      pool
+        .execute(
+          "create function it_wf() returns int modifies sql data \
+           begin insert into it_wf_guard values (1); return 1; end",
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+      let driver = MySqlDriver::connect(&dsn()).await.map_err(|e| e.to_string())?;
+      let refused = driver.query("select it_wf()").await.is_err();
+      let count: i64 = sqlx::query_scalar("select count(*) from it_wf_guard")
+        .fetch_one(&pool)
+        .await
+        .map_err(|e| e.to_string())?;
+      Ok((refused, count))
+    }
+    .await;
 
-    let driver = MySqlDriver::connect(&dsn()).await.expect("connect read-only");
-    let outcome = driver.query("select it_wf()").await;
-    let count: i64 = sqlx::query_scalar("select count(*) from it_wf_guard")
-      .fetch_one(&pool)
-      .await
-      .expect("count rows");
-
-    // Restore the global flag *before* asserting, so a failure can't leave the
-    // server in a relaxed state.
+    // Restore the global flag ALWAYS, before unwrapping the captured result.
     pool
       .execute(format!("set global log_bin_trust_function_creators = {original_trust}").as_str())
       .await
       .expect("restore the trust flag");
 
+    let (refused, count) = result.expect("writing-function setup + check");
     assert!(
-      outcome.is_err(),
+      refused,
       "a writing function via SELECT must be refused on the read path"
     );
     assert_eq!(count, 0, "the refused function must not have inserted a row");
@@ -1032,6 +1066,9 @@ mod mysql_it {
     assert_eq!(fk.columns, ["user_id"]);
     assert_eq!(fk.references.relation, "it_users");
     assert_eq!(fk.references.columns, ["id"]);
+    // A same-database FK still carries its schema (the connected db) — not
+    // `None` (guards the cross-db schema carry against regression).
+    assert_eq!(fk.references.schema.as_deref(), Some("testdb"));
   }
 
   #[tokio::test]
