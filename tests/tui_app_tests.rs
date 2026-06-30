@@ -115,6 +115,7 @@ fn navigation_on_empty_result_stays_in_bounds() {
 use vellum::driver::Capabilities;
 use vellum::model::catalog::{Catalog, Column as CatColumn, Database, Relation, RelationKind, Schema};
 use vellum::tui::app::Focus;
+use vellum::tui::state::paginate::PageRequest;
 use vellum::tui::state::sidebar::{RelationRef, SidebarKind};
 
 fn cat_column(name: &str) -> CatColumn {
@@ -357,4 +358,130 @@ fn sidebar_cursor_clamps_at_both_ends() {
     app.on_key('k');
   }
   assert_eq!(app.sidebar().unwrap().selected(), 0, "cursor must not go negative");
+}
+
+// ── Paginated browse (#15) ────────────────────────────────────────────────
+//
+// `apply_page(result)` stands in for the runtime fetching a page: the result
+// carries up to `page_size + 1` rows (50 + 1 probe here), the App trims the
+// probe off the display and updates the counter. `n`/`p` page the table pane.
+
+#[test]
+fn browse_shows_a_row_counter_once_a_page_loads() {
+  let mut app = App::browse(catalog(), caps(false));
+  assert_eq!(app.page_counter().as_deref(), Some("no rows"), "nothing fetched yet");
+  app.apply_page(grid(2, 51)); // a full page plus the probe row
+  assert_eq!(app.page_counter().as_deref(), Some("rows 1-50"));
+  assert_eq!(app.table().rows().len(), 50, "the probe row is trimmed off the display");
+}
+
+#[test]
+fn n_requests_the_next_page_and_the_counter_advances() {
+  let mut app = App::browse(catalog(), caps(false));
+  app.apply_page(grid(2, 51)); // page 0, has a next
+  app.on_key('\t'); // focus the table pane — pagination lives there
+  app.on_key('n');
+  assert_eq!(app.take_page_request(), Some(PageRequest::Next));
+  assert!(app.take_page_request().is_none(), "request cleared on read");
+  app.apply_page(grid(2, 20)); // runtime fetched page 1 (a partial last page)
+  assert_eq!(app.page_counter().as_deref(), Some("rows 51-70"));
+}
+
+#[test]
+fn n_is_inert_on_the_last_page() {
+  let mut app = App::browse(catalog(), caps(false));
+  app.apply_page(grid(2, 30)); // partial page, no probe -> no next page
+  app.on_key('\t');
+  app.on_key('n');
+  assert!(app.take_page_request().is_none(), "no next page to request");
+  assert_eq!(
+    app.page_counter().as_deref(),
+    Some("rows 1-30"),
+    "still on the only page"
+  );
+}
+
+#[test]
+fn p_requests_the_previous_page() {
+  let mut app = App::browse(catalog(), caps(false));
+  app.apply_page(grid(2, 51));
+  app.on_key('\t');
+  app.on_key('n'); // -> page 1 requested
+  app.take_page_request();
+  app.apply_page(grid(2, 20));
+  app.on_key('p');
+  assert_eq!(app.take_page_request(), Some(PageRequest::Prev));
+}
+
+#[test]
+fn n_and_p_do_nothing_until_the_table_is_focused() {
+  // Browse opens focused on the sidebar; `n`/`p` there must not page.
+  let mut app = App::browse(catalog(), caps(false));
+  app.apply_page(grid(2, 51));
+  assert_eq!(app.focus(), Focus::Sidebar);
+  app.on_key('n');
+  app.on_key('p');
+  assert!(app.take_page_request().is_none(), "sidebar focus -> no paging");
+}
+
+#[test]
+fn opening_another_relation_restarts_pagination() {
+  let mut app = App::browse(catalog(), caps(false));
+  app.on_key(' '); // [app, users, orders], cursor on the database
+  app.on_key('j'); // onto `users`
+  app.on_key('\n'); // open `users`
+  app.take_browse_intent();
+  app.on_key('\t'); // focus the table pane
+  app.apply_page(grid(2, 51)); // users page 0 (has a next)
+  app.on_key('n'); // request users page 1
+  app.take_page_request();
+  app.apply_page(grid(2, 20)); // users page 1
+  assert_eq!(
+    app.page_counter().as_deref(),
+    Some("rows 51-70"),
+    "paginated into users"
+  );
+
+  // Open a different relation: pagination must restart from page 0, not inherit
+  // the old offset.
+  app.on_key('\t'); // back to the sidebar (cursor still on `users`)
+  app.on_key('j'); // onto `orders`
+  app.on_key('\n'); // open `orders`
+  app.take_browse_intent();
+  app.on_key('\t'); // focus the table
+  app.apply_page(grid(2, 10)); // orders page 0
+  assert_eq!(
+    app.page_counter().as_deref(),
+    Some("rows 1-10"),
+    "a freshly-opened relation starts at page 0, not the previous offset"
+  );
+}
+
+#[test]
+fn opening_a_relation_drops_a_pending_page_request() {
+  let mut app = App::browse(catalog(), caps(false));
+  app.on_key(' ');
+  app.on_key('j'); // users
+  app.on_key('\n');
+  app.take_browse_intent();
+  app.on_key('\t');
+  app.apply_page(grid(2, 51));
+  app.on_key('n'); // page request set but NOT consumed
+  app.on_key('\t'); // back to sidebar
+  app.on_key('j'); // orders
+  app.on_key('\n'); // opening a relation must clear the stale request
+  assert!(
+    app.take_page_request().is_none(),
+    "a stale page request from the previous relation is dropped"
+  );
+}
+
+#[test]
+fn one_shot_mode_has_no_pagination() {
+  let mut app = App::new(grid(2, 3));
+  assert_eq!(app.page_counter(), None, "one-shot has no paginator");
+  app.on_key('n'); // unbound in one-shot — must not panic or page
+  app.on_key('p');
+  assert!(app.take_page_request().is_none());
+  assert_eq!(app.table().rows().len(), 3, "table untouched");
 }

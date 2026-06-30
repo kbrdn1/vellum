@@ -11,6 +11,7 @@
 use crate::driver::Capabilities;
 use crate::model::catalog::Catalog;
 use crate::model::QueryResult;
+use crate::tui::state::paginate::{PageRequest, Paginator, DEFAULT_PAGE_SIZE};
 use crate::tui::state::sidebar::{RelationRef, SidebarState};
 use crate::tui::state::table::TableState;
 
@@ -22,13 +23,16 @@ pub enum Focus {
 }
 
 /// App state: the result table, an optional schema sidebar, the focused pane,
-/// a pending open-browse intent, and the quit flag.
+/// a pending open-browse intent, the browse pagination cursor (browse mode
+/// only) plus its pending page request, and the quit flag.
 #[derive(Debug)]
 pub struct App {
   table: TableState,
   sidebar: Option<SidebarState>,
   focus: Focus,
   browse_intent: Option<RelationRef>,
+  paginator: Option<Paginator>,
+  page_request: Option<PageRequest>,
   quit: bool,
 }
 
@@ -41,6 +45,8 @@ impl App {
       sidebar: None,
       focus: Focus::Table,
       browse_intent: None,
+      paginator: None,
+      page_request: None,
       quit: false,
     }
   }
@@ -59,6 +65,8 @@ impl App {
       sidebar: Some(SidebarState::new(catalog, capabilities.schemas)),
       focus: Focus::Sidebar,
       browse_intent: None,
+      paginator: Some(Paginator::new(DEFAULT_PAGE_SIZE)),
+      page_request: None,
       quit: false,
     }
   }
@@ -89,6 +97,53 @@ impl App {
     self.browse_intent.take()
   }
 
+  /// Take the pending page request (cleared on read). Set when `n`/`p` move to a
+  /// page that exists; the runtime fetches `paginator`'s `limit`/`offset` for the
+  /// open relation and feeds the rows back through [`apply_page`](Self::apply_page).
+  pub fn take_page_request(&mut self) -> Option<PageRequest> {
+    self.page_request.take()
+  }
+
+  /// The browse status-line counter (`"rows 51-70"` / `"no rows"`), or `None` in
+  /// one-shot mode where there is no pagination.
+  pub fn page_counter(&self) -> Option<String> {
+    self.paginator.as_ref().map(Paginator::counter)
+  }
+
+  /// Feed a freshly-fetched page (up to `limit` rows, the last being the probe)
+  /// into the table. Records the fetched count so the counter and `has_next` are
+  /// known, and trims the probe row off the display. No-op in one-shot mode.
+  pub fn apply_page(&mut self, mut result: QueryResult) {
+    if let Some(paginator) = self.paginator.as_mut() {
+      paginator.record(result.rows.len());
+      result.rows.truncate(paginator.visible());
+      self.table = TableState::new(result);
+    }
+  }
+
+  /// Open a relation picked in the sidebar: record the intent for the loader to
+  /// fetch, and **restart pagination from page 0** — a freshly-opened relation
+  /// must not inherit the previous one's page offset or a stale page request.
+  fn open_relation(&mut self, relation: RelationRef) {
+    self.browse_intent = Some(relation);
+    self.paginator = Some(Paginator::new(DEFAULT_PAGE_SIZE));
+    self.page_request = None;
+  }
+
+  /// Move the browse cursor a page if that page exists, recording the request
+  /// for the runtime to fetch. No-op in one-shot mode or at a boundary.
+  fn request_page(&mut self, request: PageRequest) {
+    if let Some(paginator) = self.paginator.as_mut() {
+      let moved = match request {
+        PageRequest::Next => paginator.next_page(),
+        PageRequest::Prev => paginator.prev_page(),
+      };
+      if moved {
+        self.page_request = Some(request);
+      }
+    }
+  }
+
   /// Apply a key press. `q` quits; `Tab` toggles focus between the sidebar and
   /// the table (only when a sidebar exists); every other key routes to the
   /// focused pane. The crossterm loop maps the arrow keys / Enter onto these
@@ -106,11 +161,20 @@ impl App {
       }
       _ => match self.focus {
         Focus::Sidebar => {
-          if let Some(sidebar) = self.sidebar.as_mut() {
-            on_sidebar_key(sidebar, key, &mut self.browse_intent);
+          // Resolve the opened relation (if any) before touching `self` again —
+          // the sidebar borrow must end before `open_relation` takes `&mut self`.
+          let opened = self.sidebar.as_mut().and_then(|sidebar| on_sidebar_key(sidebar, key));
+          if let Some(relation) = opened {
+            self.open_relation(relation);
           }
         }
-        Focus::Table => on_table_key(&mut self.table, key),
+        // In the table pane, `n`/`p` page the browse cursor; everything else is
+        // vim table navigation. In one-shot mode `request_page` is inert.
+        Focus::Table => match key {
+          'n' => self.request_page(PageRequest::Next),
+          'p' => self.request_page(PageRequest::Prev),
+          _ => on_table_key(&mut self.table, key),
+        },
       },
     }
   }
@@ -131,18 +195,22 @@ fn on_table_key(table: &mut TableState, key: char) {
 }
 
 /// Sidebar keys: `j`/`k`/`g`/`G` navigate; Space expands/collapses the selected
-/// node; Enter opens the selected relation (or toggles a database/schema).
-fn on_sidebar_key(sidebar: &mut SidebarState, key: char, intent: &mut Option<RelationRef>) {
+/// node; Enter opens the selected relation — returned to the caller so it can
+/// reset pagination — or, on a database/schema, toggles it.
+fn on_sidebar_key(sidebar: &mut SidebarState, key: char) -> Option<RelationRef> {
   match key {
     'j' => sidebar.select_next(),
     'k' => sidebar.select_prev(),
     'g' => sidebar.select_first(),
     'G' => sidebar.select_last(),
     ' ' => sidebar.toggle(),
-    '\n' | '\r' => match sidebar.selected_relation() {
-      Some(relation) => *intent = Some(relation),
-      None => sidebar.toggle(),
-    },
+    '\n' | '\r' => {
+      if let Some(relation) = sidebar.selected_relation() {
+        return Some(relation);
+      }
+      sidebar.toggle();
+    }
     _ => {}
   }
+  None
 }
