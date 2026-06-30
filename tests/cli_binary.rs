@@ -89,6 +89,23 @@ fn interactive_without_db_is_a_usage_error() {
   cmd.assert().failure();
 }
 
+#[test]
+fn interactive_refuses_without_a_terminal_before_touching_the_db() {
+  // `-i` must hit the terminal guard up front — not open the database and run
+  // the query first. A non-existent path proves the order: a guard *before* the
+  // open yields the terminal error, a guard *after* would yield a driver error.
+  let mut cmd = Command::cargo_bin("vellum").unwrap();
+  cmd
+    .arg("--db")
+    .arg("/nonexistent/vellum-does-not-exist.sqlite")
+    .arg("select 1")
+    .arg("-i");
+  cmd
+    .assert()
+    .failure()
+    .stderr(predicate::str::contains("needs an interactive terminal"));
+}
+
 /// Seed a one-row `items` table at `path` for the DSN-encoding tests.
 fn seed_items(path: &std::path::Path) {
   common::seed_sql(

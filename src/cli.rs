@@ -50,10 +50,14 @@ pub async fn run(cli: Cli) -> Result<()> {
     (Some(db), Some(sql)) => {
       // Open by path (not a DSN string) so the literal file named is queried —
       // see `SqliteDriver::open_readonly`.
+      // For `-i`, refuse a non-terminal before doing any work — no point opening
+      // the database or running the query if the result can't be rendered.
+      if interactive {
+        require_terminal()?;
+      }
       let driver = SqliteDriver::open_readonly(&db).await?;
       let result = driver.query(&sql).await?;
       if interactive {
-        require_terminal()?;
         tui::run(result)
       } else {
         print_result(&result)
