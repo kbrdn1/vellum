@@ -13,7 +13,7 @@ use sqlx::{Column as _, Executor as _, Row as _, TypeInfo as _, ValueRef as _};
 
 use sqlparser::dialect::SQLiteDialect;
 
-use crate::driver::{ensure_single_read_query, Driver};
+use crate::driver::{ensure_single_read_query, Capabilities, Driver};
 use crate::error::{Result, VellumError};
 // `catalog` is module-qualified so its `Column` doesn't clash with the result
 // `Column` imported flat below.
@@ -47,9 +47,8 @@ impl SqliteDriver {
   /// straight to the connection (not the `query` read guard) — `PRAGMA` is
   /// read-only by nature and wouldn't pass the SELECT-only check anyway. SQLite's
   /// single default schema maps to one `Database` / `Schema`, both named `main`.
-  /// Inherent for now; it joins the `Driver` port when the trait freezes with
-  /// the second impl (#11).
-  pub async fn introspect(&self) -> Result<catalog::Catalog> {
+  /// Backs [`Driver::introspect`] (the frozen port, #11).
+  async fn introspect_catalog(&self) -> Result<catalog::Catalog> {
     // Run the whole introspection on one read transaction so the snapshot is
     // consistent — a concurrent DDL can't have a relation listed here and then
     // dropped before its columns / FKs are read. Read-only: dropping the
@@ -237,8 +236,22 @@ impl Driver for SqliteDriver {
     })
   }
 
-  fn kind(&self) -> Backend {
+  async fn introspect(&self) -> Result<catalog::Catalog> {
+    self.introspect_catalog().await
+  }
+
+  fn backend(&self) -> Backend {
     Backend::Sqlite
+  }
+
+  fn capabilities(&self) -> Capabilities {
+    // SQLite: `EXPLAIN QUERY PLAN`; a single schema (no `schemas`); foreign keys
+    // are declarable and introspected (`pragma_foreign_key_list`).
+    Capabilities {
+      explain: true,
+      schemas: false,
+      foreign_keys: true,
+    }
   }
 }
 

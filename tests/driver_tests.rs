@@ -9,7 +9,7 @@ use std::str::FromStr;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePool};
 use sqlx::Executor as _;
 use tempfile::NamedTempFile;
-use vellum::driver::{Driver, SqliteDriver};
+use vellum::driver::{Capabilities, Driver, SqliteDriver};
 use vellum::model::catalog::RelationKind;
 use vellum::model::{Backend, TypeKind, Value};
 
@@ -47,11 +47,26 @@ async fn seeded_driver() -> (SqliteDriver, NamedTempFile) {
 async fn connect_then_select_literal_one() {
   let (driver, _db) = seeded_driver().await;
   let result = driver.query("select 1").await.expect("query select 1");
-  assert_eq!(driver.kind(), Backend::Sqlite);
+  assert_eq!(driver.backend(), Backend::Sqlite);
   assert_eq!(result.columns.len(), 1);
   assert_eq!(result.rows.len(), 1);
   assert_eq!(result.rows[0][0], Value::Int(1));
   assert_eq!(result.affected, None);
+}
+
+#[tokio::test]
+async fn sqlite_capabilities() {
+  // The frozen port's per-backend feature gate: SQLite has EXPLAIN and foreign
+  // keys, but a single schema (no `schemas` level in the sidebar).
+  let (driver, _db) = seeded_driver().await;
+  assert_eq!(
+    driver.capabilities(),
+    Capabilities {
+      explain: true,
+      schemas: false,
+      foreign_keys: true,
+    }
+  );
 }
 
 #[tokio::test]
@@ -232,7 +247,7 @@ async fn open_readonly_opens_a_file_by_literal_path() {
     .query("select label from items")
     .await
     .expect("query the path-opened db");
-  assert_eq!(driver.kind(), Backend::Sqlite);
+  assert_eq!(driver.backend(), Backend::Sqlite);
   assert_eq!(result.rows.len(), 1);
   assert_eq!(result.rows[0][0], Value::Text("alpha".to_string()));
 }
@@ -515,7 +530,8 @@ async fn sqlite_introspection_keeps_an_explicit_empty_named_target_column() {
 mod postgres_it {
   use sqlx::postgres::PgPoolOptions;
   use sqlx::{Executor as _, PgPool};
-  use vellum::driver::{Driver, PostgresDriver};
+  use vellum::driver::{Capabilities, Driver, PostgresDriver};
+  use vellum::model::catalog::RelationKind;
   use vellum::model::{Backend, Value};
 
   /// The PG DSN — from `VELLUM_IT_PG_DSN`, or a standard local default so the
@@ -559,7 +575,7 @@ mod postgres_it {
       .expect("seed row");
 
     let driver = PostgresDriver::connect(&dsn()).await.expect("connect read-only");
-    assert_eq!(driver.kind(), Backend::Postgres);
+    assert_eq!(driver.backend(), Backend::Postgres);
 
     let result = driver.query("select * from it_types").await.expect("query it_types");
     assert_eq!(result.rows.len(), 1);
@@ -680,5 +696,493 @@ mod postgres_it {
       .await
       .expect("count rows");
     assert_eq!(count, 0, "no row may be written after a poison attempt");
+  }
+
+  #[tokio::test]
+  async fn pg_capabilities() {
+    // Postgres is the backend with real schemas — the frozen capability gates
+    // the sidebar's schema level on.
+    let driver = PostgresDriver::connect(&dsn()).await.expect("connect read-only");
+    assert_eq!(
+      driver.capabilities(),
+      Capabilities {
+        explain: true,
+        schemas: true,
+        foreign_keys: true,
+      }
+    );
+  }
+
+  #[tokio::test]
+  async fn pg_introspection_returns_schema_tables_columns_pk_fk() {
+    let pool = seed_pool().await;
+    // A dedicated schema isolates this test (Postgres has real schemas).
+    pool
+      .execute("drop schema if exists vellum_it_pgcat cascade")
+      .await
+      .expect("drop schema");
+    pool
+      .execute("create schema vellum_it_pgcat")
+      .await
+      .expect("create schema");
+    pool
+      .execute("create table vellum_it_pgcat.users (id int primary key, email text not null, bio text)")
+      .await
+      .expect("create users");
+    pool
+      .execute(
+        "create table vellum_it_pgcat.orders (id int primary key, \
+         user_id int not null references vellum_it_pgcat.users(id), total double precision)",
+      )
+      .await
+      .expect("create orders");
+    pool
+      .execute("create view vellum_it_pgcat.recent as select id, user_id from vellum_it_pgcat.orders")
+      .await
+      .expect("create view");
+
+    let driver = PostgresDriver::connect(&dsn()).await.expect("connect read-only");
+    let catalog = driver.introspect().await.expect("introspect the schema");
+    let db = catalog.databases.first().expect("one database");
+    let schema = db.schema("vellum_it_pgcat").expect("schema vellum_it_pgcat");
+
+    let users = schema.relation("users").expect("relation users");
+    assert_eq!(users.kind, RelationKind::Table);
+    assert!(users.column("id").expect("id").primary_key, "id is the PK");
+    assert!(!users.column("email").expect("email").nullable, "email is NOT NULL");
+    assert!(users.column("bio").expect("bio").nullable, "bio admits NULL");
+
+    let recent = schema.relation("recent").expect("relation recent");
+    assert_eq!(recent.kind, RelationKind::View);
+
+    let orders = schema.relation("orders").expect("relation orders");
+    assert_eq!(orders.foreign_keys.len(), 1);
+    let fk = &orders.foreign_keys[0];
+    assert_eq!(fk.columns, ["user_id"]);
+    assert_eq!(fk.references.relation, "users");
+    assert_eq!(fk.references.columns, ["id"]);
+    // The FK resolves (same-schema reference carries its schema).
+    let target = db.resolve(fk, "vellum_it_pgcat").expect("the FK resolves");
+    assert_eq!(target.name, "users");
+  }
+
+  #[tokio::test]
+  async fn pg_introspection_keeps_user_schemas_prefixed_like_pg() {
+    // `pgvellum_it` matches a wildcard `pg_%` (the `_` is a LIKE wildcard) but is NOT a
+    // reserved `pg_` schema — it must survive (the exclusion escapes the `_`).
+    let pool = seed_pool().await;
+    pool
+      .execute("drop schema if exists pgvellum_it cascade")
+      .await
+      .expect("drop schema");
+    pool.execute("create schema pgvellum_it").await.expect("create schema");
+    pool
+      .execute("create table pgvellum_it.t (id int primary key)")
+      .await
+      .expect("create table");
+
+    let driver = PostgresDriver::connect(&dsn()).await.expect("connect read-only");
+    let catalog = driver.introspect().await.expect("introspect the schema");
+    let db = catalog.databases.first().expect("one database");
+    assert!(
+      db.schema("pgvellum_it").is_some(),
+      "a user schema named like `pg...` (no literal `pg_`) must not be dropped"
+    );
+  }
+
+  #[tokio::test]
+  async fn pg_introspection_pk_does_not_leak_across_same_named_constraints() {
+    // A PK on one table and a FK on another can share a constraint name in one
+    // schema (the PK backs a schema-unique index; the FK does not). Both then
+    // appear in `key_column_usage` under that name — so introspecting the PK
+    // table must constrain the join to that table, or the FK table's column
+    // leaks into the PK set and a homonym is wrongly flagged.
+    let pool = seed_pool().await;
+    pool
+      .execute("drop schema if exists vellum_it_pkdup cascade")
+      .await
+      .expect("drop schema");
+    pool
+      .execute("create schema vellum_it_pkdup")
+      .await
+      .expect("create schema");
+    // t_a: PK `pk_col` (constraint `shared_name`) plus a plain `other_col`.
+    pool
+      .execute("create table vellum_it_pkdup.t_a (pk_col int constraint shared_name primary key, other_col int)")
+      .await
+      .expect("create t_a");
+    // t_b: a FK *also* named `shared_name`, on a column named `other_col`.
+    pool
+      .execute(
+        "create table vellum_it_pkdup.t_b (other_col int, \
+         constraint shared_name foreign key (other_col) references vellum_it_pkdup.t_a(pk_col))",
+      )
+      .await
+      .expect("create t_b");
+
+    let driver = PostgresDriver::connect(&dsn()).await.expect("connect read-only");
+    let catalog = driver.introspect().await.expect("introspect the schema");
+    let schema = catalog
+      .databases
+      .first()
+      .unwrap()
+      .schema("vellum_it_pkdup")
+      .expect("schema vellum_it_pkdup");
+    let t_a = schema.relation("t_a").expect("relation t_a");
+    assert!(
+      t_a.column("pk_col").expect("column pk_col").primary_key,
+      "t_a.pk_col is the primary key"
+    );
+    assert!(
+      !t_a.column("other_col").expect("column other_col").primary_key,
+      "t_a.other_col must NOT be flagged PK — it is t_b's FK column under the same constraint name"
+    );
+  }
+
+  #[tokio::test]
+  async fn pg_a_write_hidden_in_a_subquery_lands_nothing() {
+    // The parser guard is best-effort; the per-query READ ONLY transaction is
+    // the guarantee. A data-modifying CTE buried in a derived table can't be a
+    // top-level write — Postgres refuses it (`must be at the top level`) — so
+    // even if the parser waves it through, nothing is written.
+    let pool = seed_pool().await;
+    pool
+      .execute("drop table if exists vellum_it_hidden")
+      .await
+      .expect("drop");
+    pool
+      .execute("create table vellum_it_hidden (x int)")
+      .await
+      .expect("create table");
+
+    let driver = PostgresDriver::connect(&dsn()).await.expect("connect read-only");
+    let outcome = driver
+      .query("select * from (with w as (insert into vellum_it_hidden values (1) returning *) select * from w) s")
+      .await;
+    assert!(outcome.is_err(), "a write hidden in a subquery must be refused");
+
+    let count: i64 = sqlx::query_scalar("select count(*) from vellum_it_hidden")
+      .fetch_one(&pool)
+      .await
+      .expect("count rows");
+    assert_eq!(count, 0, "no row may be written by a hidden subquery write");
+  }
+}
+
+/// MySQL integration tests — behind the `it-db` feature (default `cargo test`
+/// stays on in-memory SQLite, no Docker). Run with:
+///
+/// ```bash
+/// VELLUM_IT_MYSQL_DSN=mysql://root@localhost:3306/testdb \
+///   cargo test --features it-db --test driver_tests mysql_it
+/// ```
+///
+/// Seeded through a separate writable pool; uniquely-named tables.
+#[cfg(feature = "it-db")]
+mod mysql_it {
+  use sqlx::mysql::MySqlPoolOptions;
+  use sqlx::{Executor as _, MySqlPool};
+  use vellum::driver::{Capabilities, Driver, MySqlDriver};
+  use vellum::model::catalog::RelationKind;
+  use vellum::model::{Backend, Value};
+
+  fn dsn() -> String {
+    std::env::var("VELLUM_IT_MYSQL_DSN").unwrap_or_else(|_| "mysql://root@localhost:3306/testdb".to_string())
+  }
+
+  async fn seed_pool() -> MySqlPool {
+    MySqlPoolOptions::new()
+      .max_connections(1)
+      .connect(&dsn())
+      .await
+      .expect("connect a writable seed pool")
+  }
+
+  #[tokio::test]
+  async fn mysql_connect_then_select_maps_types() {
+    let pool = seed_pool().await;
+    pool.execute("drop table if exists it_types").await.expect("drop");
+    pool
+      .execute(
+        "create table it_types (
+           i_tiny tinyint, i_int int, i_big bigint,
+           f_float float, f_double double,
+           t_text text, t_varchar varchar(50), b_blob blob,
+           j json, dt datetime
+         )",
+      )
+      .await
+      .expect("create table");
+    pool
+      .execute(
+        "insert into it_types values (
+           1, 2, 3, 1.5, 2.5, 'hello', 'world', x'deadbeef',
+           '{\"k\":1}', '2024-01-02 03:04:05'
+         )",
+      )
+      .await
+      .expect("seed row");
+
+    let driver = MySqlDriver::connect(&dsn()).await.expect("connect read-only");
+    assert_eq!(driver.backend(), Backend::MySql);
+
+    let result = driver.query("select * from it_types").await.expect("query it_types");
+    assert_eq!(result.rows.len(), 1);
+    let row = &result.rows[0];
+    assert_eq!(row[0], Value::Int(1));
+    assert_eq!(row[1], Value::Int(2));
+    assert_eq!(row[2], Value::Int(3));
+    assert_eq!(row[3], Value::Float(1.5));
+    assert_eq!(row[4], Value::Float(2.5));
+    assert_eq!(row[5], Value::Text("hello".into()));
+    assert_eq!(row[6], Value::Text("world".into()));
+    assert_eq!(row[7], Value::Bytes(vec![0xde, 0xad, 0xbe, 0xef]));
+    assert!(
+      matches!(&row[8], Value::Json(s) if s.contains("\"k\"")),
+      "json → Json, got {:?}",
+      row[8]
+    );
+    assert!(
+      matches!(&row[9], Value::Timestamp(s) if s.contains("2024")),
+      "datetime → Timestamp, got {:?}",
+      row[9]
+    );
+  }
+
+  #[tokio::test]
+  async fn mysql_query_refuses_a_plain_write() {
+    let driver = MySqlDriver::connect(&dsn()).await.expect("connect read-only");
+    assert!(
+      driver.query("create table it_plain_ddl (x int)").await.is_err(),
+      "DDL must be refused on the read path"
+    );
+    assert!(
+      driver
+        .query("insert into it_types values (1,2,3,1.5,2.5,'a','b',x'00','{}','2024-01-01 00:00:00')")
+        .await
+        .is_err(),
+      "an INSERT must be refused on the read path"
+    );
+  }
+
+  #[tokio::test]
+  async fn mysql_read_only_tx_refuses_a_writing_function() {
+    // `SELECT writing_func()` parses as a `Query` (passes the parser guard) but
+    // the function writes — the per-query READ ONLY transaction must refuse it
+    // and insert nothing. This is MySQL's guard-passing write vector (it has no
+    // data-modifying CTE; `INTO OUTFILE` is rejected at the parser).
+    let pool = seed_pool().await;
+    pool.execute("drop table if exists it_wf_guard").await.expect("drop");
+    pool
+      .execute("create table it_wf_guard (x int)")
+      .await
+      .expect("create table");
+    // A data-modifying stored function needs the binlog trust flag — a *global*
+    // server setting. Save it and restore it afterwards so the test leaves no
+    // trace on a shared server.
+    let original_trust: i64 = sqlx::query_scalar("select @@global.log_bin_trust_function_creators")
+      .fetch_one(&pool)
+      .await
+      .expect("read the trust flag");
+    pool
+      .execute("set global log_bin_trust_function_creators = 1")
+      .await
+      .expect("set trust");
+    // Everything below the SET GLOBAL may fail; capture results instead of
+    // panicking so the global is restored no matter what.
+    let result: Result<(bool, i64), String> = async {
+      pool
+        .execute("drop function if exists it_wf")
+        .await
+        .map_err(|e| e.to_string())?;
+      pool
+        .execute(
+          "create function it_wf() returns int modifies sql data \
+           begin insert into it_wf_guard values (1); return 1; end",
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+      let driver = MySqlDriver::connect(&dsn()).await.map_err(|e| e.to_string())?;
+      let refused = driver.query("select it_wf()").await.is_err();
+      let count: i64 = sqlx::query_scalar("select count(*) from it_wf_guard")
+        .fetch_one(&pool)
+        .await
+        .map_err(|e| e.to_string())?;
+      Ok((refused, count))
+    }
+    .await;
+
+    // Restore the global flag ALWAYS, before unwrapping the captured result.
+    pool
+      .execute(format!("set global log_bin_trust_function_creators = {original_trust}").as_str())
+      .await
+      .expect("restore the trust flag");
+
+    let (refused, count) = result.expect("writing-function setup + check");
+    assert!(
+      refused,
+      "a writing function via SELECT must be refused on the read path"
+    );
+    assert_eq!(count, 0, "the refused function must not have inserted a row");
+  }
+
+  #[tokio::test]
+  async fn mysql_introspection_returns_tables_columns_pk_fk() {
+    let pool = seed_pool().await;
+    pool
+      .execute("drop table if exists it_orders")
+      .await
+      .expect("drop orders");
+    pool.execute("drop table if exists it_users").await.expect("drop users");
+    pool.execute("drop view if exists it_recent").await.expect("drop view");
+    pool
+      .execute("create table it_users (id int primary key, email varchar(255) not null, bio text)")
+      .await
+      .expect("create users");
+    pool
+      .execute(
+        "create table it_orders (id int primary key, \
+         user_id int not null, total double, \
+         constraint fk_user foreign key (user_id) references it_users(id))",
+      )
+      .await
+      .expect("create orders");
+    pool
+      .execute("create view it_recent as select id, user_id from it_orders")
+      .await
+      .expect("create view");
+
+    let driver = MySqlDriver::connect(&dsn()).await.expect("connect read-only");
+    let catalog = driver.introspect().await.expect("introspect the schema");
+    let db = catalog.databases.first().expect("one database");
+    let schema = db.schemas.first().expect("one schema");
+
+    let users = schema.relation("it_users").expect("relation it_users");
+    assert_eq!(users.kind, RelationKind::Table);
+    let id = users.column("id").expect("column id");
+    assert!(id.primary_key, "id is the primary key");
+    let email = users.column("email").expect("column email");
+    assert!(!email.nullable, "email is NOT NULL");
+    let bio = users.column("bio").expect("column bio");
+    assert!(bio.nullable, "bio admits NULL");
+
+    let recent = schema.relation("it_recent").expect("relation it_recent");
+    assert_eq!(recent.kind, RelationKind::View);
+
+    let orders = schema.relation("it_orders").expect("relation it_orders");
+    assert_eq!(orders.foreign_keys.len(), 1);
+    let fk = &orders.foreign_keys[0];
+    assert_eq!(fk.columns, ["user_id"]);
+    assert_eq!(fk.references.relation, "it_users");
+    assert_eq!(fk.references.columns, ["id"]);
+    // A same-database FK still carries its schema (the connected db) — not
+    // `None` (guards the cross-db schema carry against regression). Derived from
+    // the introspected db, so it holds whatever database the DSN points at.
+    assert_eq!(fk.references.schema.as_deref(), Some(db.name.as_str()));
+  }
+
+  #[tokio::test]
+  async fn mysql_capabilities() {
+    // MySQL: EXPLAIN and foreign keys, but database = schema (no schema level).
+    let driver = MySqlDriver::connect(&dsn()).await.expect("connect read-only");
+    assert_eq!(
+      driver.capabilities(),
+      Capabilities {
+        explain: true,
+        schemas: false,
+        foreign_keys: true,
+      }
+    );
+  }
+
+  #[tokio::test]
+  async fn mysql_time_column_maps_to_a_marker_not_a_crash() {
+    // MySQL `TIME` is a duration (here `838:59:59`, past wall-clock midnight),
+    // which a `time::Time` decode can't hold — it must map to the conservative
+    // marker, never fail the whole query.
+    let pool = seed_pool().await;
+    pool.execute("drop table if exists it_time").await.expect("drop");
+    pool
+      .execute("create table it_time (d time)")
+      .await
+      .expect("create table");
+    pool
+      .execute("insert into it_time values ('838:59:59')")
+      .await
+      .expect("seed an out-of-wall-clock TIME");
+
+    let driver = MySqlDriver::connect(&dsn()).await.expect("connect read-only");
+    let result = driver
+      .query("select d from it_time")
+      .await
+      .expect("query must not fail on TIME");
+    assert!(
+      matches!(&result.rows[0][0], Value::Text(s) if s.starts_with('<')),
+      "TIME → conservative marker, got {:?}",
+      result.rows[0][0]
+    );
+  }
+
+  #[tokio::test]
+  async fn mysql_introspection_carries_a_cross_database_fk_schema() {
+    // A MySQL foreign key can reference a table in another database (= schema).
+    // The reference must carry that schema, not silently claim same-schema.
+    let pool = seed_pool().await;
+    pool.execute("drop table if exists it_child").await.expect("drop child");
+    pool
+      .execute("drop database if exists vellum_it_xdb")
+      .await
+      .expect("drop other db");
+    pool
+      .execute("create database vellum_it_xdb")
+      .await
+      .expect("create other db");
+    pool
+      .execute("create table vellum_it_xdb.parent (id int primary key)")
+      .await
+      .expect("create parent");
+    pool
+      .execute("create table it_child (pid int, foreign key (pid) references vellum_it_xdb.parent(id))")
+      .await
+      .expect("create child with a cross-db FK");
+
+    // Introspect and extract the asserted values, capturing instead of
+    // panicking so the cleanup below (which drops a database) always runs.
+    let driver = MySqlDriver::connect(&dsn()).await.expect("connect read-only");
+    let captured: Result<(usize, String, Option<String>), String> = async {
+      let catalog = driver.introspect().await.map_err(|e| e.to_string())?;
+      let schema = catalog
+        .databases
+        .first()
+        .and_then(|d| d.schemas.first())
+        .ok_or("no schema")?;
+      let child = schema.relation("it_child").ok_or("relation it_child missing")?;
+      let fk = child.foreign_keys.first().ok_or("no foreign key")?;
+      Ok((
+        child.foreign_keys.len(),
+        fk.references.relation.clone(),
+        fk.references.schema.clone(),
+      ))
+    }
+    .await;
+
+    // Clean up ALWAYS, before asserting.
+    pool
+      .execute("drop table if exists it_child")
+      .await
+      .expect("cleanup child");
+    pool
+      .execute("drop database if exists vellum_it_xdb")
+      .await
+      .expect("cleanup other db");
+
+    let (fk_count, ref_relation, ref_schema) = captured.expect("introspect cross-db FK");
+    assert_eq!(fk_count, 1);
+    assert_eq!(ref_relation, "parent");
+    assert_eq!(
+      ref_schema.as_deref(),
+      Some("vellum_it_xdb"),
+      "a cross-database FK must carry the referenced schema"
+    );
   }
 }
