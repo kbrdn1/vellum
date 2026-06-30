@@ -56,11 +56,11 @@ jobs:
         run: cargo test --verbose
 
   it-db:
-    name: it-db (postgres)
+    name: it-db (postgres + mysql)
     runs-on: ubuntu-latest
     # The `it-db` feature gate runs the server-backed integration tests
-    # (#10 PostgreSQL). Kept out of the default `test` job so a plain
-    # `cargo test` needs no Docker; here a Postgres service backs them.
+    # (#10 PostgreSQL, #11 MySQL). Kept out of the default `test` job so a plain
+    # `cargo test` needs no Docker; here Postgres + MySQL services back them.
     services:
       postgres:
         image: postgres:16-alpine
@@ -77,6 +77,20 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
+      mysql:
+        image: mysql:8
+        env:
+          MYSQL_DATABASE: testdb
+          # Ephemeral CI service: no root password (the DB dies with the job),
+          # so no credential-shaped literal lands in the repo.
+          MYSQL_ALLOW_EMPTY_PASSWORD: "yes"
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd "mysqladmin ping -h localhost"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
@@ -85,6 +99,7 @@ jobs:
         run: cargo test --features it-db --verbose
         env:
           VELLUM_IT_PG_DSN: postgres://postgres@localhost:5432/postgres
+          VELLUM_IT_MYSQL_DSN: mysql://root@localhost:3306/testdb
 
   hook-smoke:
     name: pre-commit hook smoke

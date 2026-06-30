@@ -682,3 +682,191 @@ mod postgres_it {
     assert_eq!(count, 0, "no row may be written after a poison attempt");
   }
 }
+
+/// MySQL integration tests — behind the `it-db` feature (default `cargo test`
+/// stays on in-memory SQLite, no Docker). Run with:
+///
+/// ```bash
+/// VELLUM_IT_MYSQL_DSN=mysql://root@localhost:3306/testdb \
+///   cargo test --features it-db --test driver_tests mysql_it
+/// ```
+///
+/// Seeded through a separate writable pool; uniquely-named tables.
+#[cfg(feature = "it-db")]
+mod mysql_it {
+  use sqlx::mysql::MySqlPoolOptions;
+  use sqlx::{Executor as _, MySqlPool};
+  use vellum::driver::{Driver, MySqlDriver};
+  use vellum::model::catalog::RelationKind;
+  use vellum::model::{Backend, Value};
+
+  fn dsn() -> String {
+    std::env::var("VELLUM_IT_MYSQL_DSN").unwrap_or_else(|_| "mysql://root@localhost:3306/testdb".to_string())
+  }
+
+  async fn seed_pool() -> MySqlPool {
+    MySqlPoolOptions::new()
+      .max_connections(1)
+      .connect(&dsn())
+      .await
+      .expect("connect a writable seed pool")
+  }
+
+  #[tokio::test]
+  async fn mysql_connect_then_select_maps_types() {
+    let pool = seed_pool().await;
+    pool.execute("drop table if exists it_types").await.expect("drop");
+    pool
+      .execute(
+        "create table it_types (
+           i_tiny tinyint, i_int int, i_big bigint,
+           f_float float, f_double double,
+           t_text text, t_varchar varchar(50), b_blob blob,
+           j json, dt datetime
+         )",
+      )
+      .await
+      .expect("create table");
+    pool
+      .execute(
+        "insert into it_types values (
+           1, 2, 3, 1.5, 2.5, 'hello', 'world', x'deadbeef',
+           '{\"k\":1}', '2024-01-02 03:04:05'
+         )",
+      )
+      .await
+      .expect("seed row");
+
+    let driver = MySqlDriver::connect(&dsn()).await.expect("connect read-only");
+    assert_eq!(driver.kind(), Backend::MySql);
+
+    let result = driver.query("select * from it_types").await.expect("query it_types");
+    assert_eq!(result.rows.len(), 1);
+    let row = &result.rows[0];
+    assert_eq!(row[0], Value::Int(1));
+    assert_eq!(row[1], Value::Int(2));
+    assert_eq!(row[2], Value::Int(3));
+    assert_eq!(row[3], Value::Float(1.5));
+    assert_eq!(row[4], Value::Float(2.5));
+    assert_eq!(row[5], Value::Text("hello".into()));
+    assert_eq!(row[6], Value::Text("world".into()));
+    assert_eq!(row[7], Value::Bytes(vec![0xde, 0xad, 0xbe, 0xef]));
+    assert!(
+      matches!(&row[8], Value::Json(s) if s.contains("\"k\"")),
+      "json → Json, got {:?}",
+      row[8]
+    );
+    assert!(
+      matches!(&row[9], Value::Timestamp(s) if s.contains("2024")),
+      "datetime → Timestamp, got {:?}",
+      row[9]
+    );
+  }
+
+  #[tokio::test]
+  async fn mysql_query_refuses_a_plain_write() {
+    let driver = MySqlDriver::connect(&dsn()).await.expect("connect read-only");
+    assert!(
+      driver.query("create table it_plain_ddl (x int)").await.is_err(),
+      "DDL must be refused on the read path"
+    );
+    assert!(
+      driver
+        .query("insert into it_types values (1,2,3,1.5,2.5,'a','b',x'00','{}','2024-01-01 00:00:00')")
+        .await
+        .is_err(),
+      "an INSERT must be refused on the read path"
+    );
+  }
+
+  #[tokio::test]
+  async fn mysql_read_only_tx_refuses_a_writing_function() {
+    // `SELECT writing_func()` parses as a `Query` (passes the parser guard) but
+    // the function writes — the per-query READ ONLY transaction must refuse it
+    // and insert nothing. This is MySQL's guard-passing write vector (it has no
+    // data-modifying CTE; `INTO OUTFILE` is rejected at the parser).
+    let pool = seed_pool().await;
+    pool.execute("drop table if exists it_wf_guard").await.expect("drop");
+    pool
+      .execute("create table it_wf_guard (x int)")
+      .await
+      .expect("create table");
+    // A data-modifying stored function needs the binlog trust flag.
+    pool
+      .execute("set global log_bin_trust_function_creators = 1")
+      .await
+      .expect("set trust");
+    pool.execute("drop function if exists it_wf").await.expect("drop fn");
+    pool
+      .execute(
+        "create function it_wf() returns int modifies sql data \
+         begin insert into it_wf_guard values (1); return 1; end",
+      )
+      .await
+      .expect("create writing function");
+
+    let driver = MySqlDriver::connect(&dsn()).await.expect("connect read-only");
+    let outcome = driver.query("select it_wf()").await;
+    assert!(
+      outcome.is_err(),
+      "a writing function via SELECT must be refused on the read path"
+    );
+
+    let count: i64 = sqlx::query_scalar("select count(*) from it_wf_guard")
+      .fetch_one(&pool)
+      .await
+      .expect("count rows");
+    assert_eq!(count, 0, "the refused function must not have inserted a row");
+  }
+
+  #[tokio::test]
+  async fn mysql_introspection_returns_tables_columns_pk_fk() {
+    let pool = seed_pool().await;
+    pool
+      .execute("drop table if exists it_orders")
+      .await
+      .expect("drop orders");
+    pool.execute("drop table if exists it_users").await.expect("drop users");
+    pool.execute("drop view if exists it_recent").await.expect("drop view");
+    pool
+      .execute("create table it_users (id int primary key, email varchar(255) not null, bio text)")
+      .await
+      .expect("create users");
+    pool
+      .execute(
+        "create table it_orders (id int primary key, \
+         user_id int not null, total double, \
+         constraint fk_user foreign key (user_id) references it_users(id))",
+      )
+      .await
+      .expect("create orders");
+    pool
+      .execute("create view it_recent as select id, user_id from it_orders")
+      .await
+      .expect("create view");
+
+    let driver = MySqlDriver::connect(&dsn()).await.expect("connect read-only");
+    let catalog = driver.introspect().await.expect("introspect the schema");
+    let db = catalog.databases.first().expect("one database");
+    let schema = db.schemas.first().expect("one schema");
+
+    let users = schema.relation("it_users").expect("relation it_users");
+    assert_eq!(users.kind, RelationKind::Table);
+    let id = users.column("id").expect("column id");
+    assert!(id.primary_key, "id is the primary key");
+    let email = users.column("email").expect("column email");
+    assert!(!email.nullable, "email is NOT NULL");
+    let bio = users.column("bio").expect("column bio");
+    assert!(bio.nullable, "bio admits NULL");
+
+    let recent = schema.relation("it_recent").expect("relation it_recent");
+    assert_eq!(recent.kind, RelationKind::View);
+
+    let orders = schema.relation("it_orders").expect("relation it_orders");
+    assert_eq!(orders.foreign_keys.len(), 1);
+    let fk = &orders.foreign_keys[0];
+    assert_eq!(fk.columns, ["user_id"]);
+    assert_eq!(fk.references.relation, "it_users");
+    assert_eq!(fk.references.columns, ["id"]);
+  }
+}

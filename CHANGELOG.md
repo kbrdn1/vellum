@@ -15,6 +15,26 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Phase 1 — MySQL driver (#11):** the third `Driver` impl, `MySqlDriver`
+  (sqlx, rustls). Read-only by construction in two layers: the shared parser
+  guard — now hardened to reject `SELECT … INTO OUTFILE`/`DUMPFILE`, a *file*
+  write a read-only transaction does NOT stop (MySQL's guard-passing write
+  vector, the analogue of Postgres's data-modifying CTE) — and a session
+  `transaction_read_only = ON` set on every connection, so each autocommit
+  statement runs as a READ ONLY transaction and a write (incl. a writing
+  function called via `SELECT`) errors. Unlike Postgres's session option this is
+  not bypassable: MySQL has no `set_config`-style function to flip it from a
+  `SELECT`, and the guard refuses a bare `SET` (the PG `BEGIN` + `SET
+  TRANSACTION READ ONLY` pattern does not port — MySQL errors 1568 — and `START
+  TRANSACTION` is rejected by the prepared protocol, 1295). Conservative type
+  mapping: int family / float·double / text family / blob family decode to their
+  `Value`; `json` → `Json`; `datetime`·`timestamp`·`date`·`time` → `Timestamp`;
+  the long tail (decimal, unsigned 64-bit, bit, enum/set, geometry) → an honest
+  `<typename>` marker (#76). Introspection reads `information_schema` for the
+  current database (`CONVERT(_ USING utf8mb4)` around its binary-collation
+  columns) into the `Catalog`; MySQL's database = schema collapses to one
+  `Database`/`Schema`. Integration tests run behind `it-db` against a MySQL
+  service in CI (default `cargo test` stays SQLite-only).
 - **Phase 1 — PostgreSQL driver (#10):** the second `Driver` impl, `PostgresDriver`
   (sqlx, rustls — `sslmode` honoured from the DSN, no OpenSSL system dep). Read-only
   by construction with **two layers**: the shared single-`SELECT` parser guard

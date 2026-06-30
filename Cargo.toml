@@ -62,17 +62,21 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 # Async methods on the `Driver` port (dyn-ready for the Phase 1 ConnPool).
 async-trait = "0.1"
 # DB drivers behind the same `Driver` port: SQLite (bundled libsqlite3 — no
-# system dep) shipped in Phase 0; Postgres lands in Phase 1 (#10). `tls-rustls`
-# gives the PG driver a TLS backend so `sslmode` from the DSN is honoured (no
-# OpenSSL system dep). `uuid` / `json` / `time` widen the typed decode so the
-# PG read path maps those into the existing `Value` variants; the long tail
-# (numeric, arrays, enums) hits a conservative non-data marker (#76).
-# `default-features = false` skips the unused macros / migrate features.
+# system dep) shipped in Phase 0; Postgres (#10) and MySQL (#11) in Phase 1.
+# `tls-rustls` gives the network drivers a TLS backend so `sslmode` from the DSN
+# is honoured (no OpenSSL system dep). `uuid` / `json` / `time` widen the typed
+# decode so the read paths map those into the existing `Value` variants; the
+# long tail (numeric, arrays, enums) hits a conservative non-data marker (#76).
+# `default-features = false` skips the unused macros / migrate features. NOTE:
+# the `mysql` driver pulls `rsa` (RUSTSEC-2023-0071, Marvin attack, no upstream
+# fix) for `caching_sha2_password` auth — now a real compiled dep, not the #10
+# phantom. The audit job is informational (continue-on-error).
 sqlx = { version = "0.8", default-features = false, features = [
   "runtime-tokio",
   "tls-rustls",
   "sqlite",
   "postgres",
+  "mysql",
   "uuid",
   "json",
   "time",

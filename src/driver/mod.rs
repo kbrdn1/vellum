@@ -4,9 +4,11 @@
 //! ARCHITECTURE §4) in Phase 1, once Postgres is the second impl. No
 //! speculative abstraction now (YAGNI).
 
+pub mod mysql;
 pub mod postgres;
 pub mod sqlite;
 
+pub use mysql::MySqlDriver;
 pub use postgres::PostgresDriver;
 pub use sqlite::SqliteDriver;
 
