@@ -44,17 +44,18 @@ pub(crate) fn ensure_single_read_query(dialect: &dyn Dialect, sql: &str) -> Resu
   let statements = Parser::parse_sql(dialect, sql)
     .map_err(|e| VellumError::Driver(format!("read-only path: could not parse SQL ({e})")))?;
   match statements.as_slice() {
-    // A single SELECT-style query (covers `WITH … SELECT`, `VALUES`, unions),
-    // or empty / comment-only input (harmless).
-    [Statement::Query(query)] if !query_writes_via_into(query) => Ok(()),
+    // A single read-only query (covers `WITH … SELECT`, `VALUES`, `TABLE x`,
+    // unions), or empty / comment-only input (harmless).
+    [Statement::Query(query)] if query_is_read_only(query) => Ok(()),
     [] => Ok(()),
-    // `SELECT … INTO` is a write that a `Query` smuggles past the statement
-    // shape: `INTO <table>` is `CREATE TABLE AS` (Postgres), and `INTO
-    // OUTFILE/DUMPFILE` writes a file (MySQL) — the latter is NOT stopped by a
-    // READ ONLY transaction. Refuse it at the parser, engine-agnostically.
+    // A `Query` that still writes: `SELECT … INTO` (a table — Postgres
+    // `CREATE TABLE AS` — or a file — MySQL `INTO OUTFILE`, which a READ ONLY
+    // transaction does NOT stop), or a data-modifying CTE whose top level is
+    // the write (`WITH c AS (…) INSERT/UPDATE/DELETE …`, which `sqlparser`
+    // models as a `Query` body). Refused at the parser, engine-agnostically.
     [Statement::Query(_)] => Err(VellumError::Driver(
-      "read-only path: `SELECT … INTO` writes (a table or a file) and is refused; \
-       reads go through the write/diff gate"
+      "read-only path: a write disguised as a query (`SELECT … INTO`, or a \
+       data-modifying CTE) is refused; writes go through the write/diff gate"
         .into(),
     )),
     [_] => Err(VellumError::Driver(
@@ -69,22 +70,24 @@ pub(crate) fn ensure_single_read_query(dialect: &dyn Dialect, sql: &str) -> Resu
   }
 }
 
-/// Whether a parsed `Query` carries a `SELECT … INTO` clause anywhere in its
-/// set expression — a write that looks like a read. `INTO <table>` materialises
-/// a table (Postgres `CREATE TABLE AS`); `INTO OUTFILE`/`DUMPFILE` writes a file
-/// (MySQL) that a READ ONLY transaction does not stop. The clause can sit on a
-/// branch of a `UNION`/`INTERSECT`/`EXCEPT` (a `SetOperation`) or inside a
-/// parenthesised subquery, not only at the top level — so the whole tree is
-/// walked, not just the outer body.
-fn query_writes_via_into(query: &Query) -> bool {
-  set_expr_writes_via_into(&query.body)
+/// Whether a parsed `Query` is a pure read. Defined as a **whitelist** (so an
+/// unrecognised `sqlparser` variant fails closed → refused): a `SELECT` with no
+/// `INTO`, a `VALUES`/`TABLE` read, or a set operation / parenthesised subquery
+/// whose every branch is itself read-only. Everything else — a `SELECT … INTO`
+/// (table or file write), or a data-modifying CTE that `sqlparser` models as a
+/// `Query` with an `INSERT`/`UPDATE`/`DELETE` body — is **not** read-only.
+fn query_is_read_only(query: &Query) -> bool {
+  set_expr_is_read_only(&query.body)
 }
 
-fn set_expr_writes_via_into(expr: &SetExpr) -> bool {
+fn set_expr_is_read_only(expr: &SetExpr) -> bool {
   match expr {
-    SetExpr::Select(select) => select.into.is_some(),
-    SetExpr::Query(query) => set_expr_writes_via_into(&query.body),
-    SetExpr::SetOperation { left, right, .. } => set_expr_writes_via_into(left) || set_expr_writes_via_into(right),
+    SetExpr::Select(select) => select.into.is_none(),
+    SetExpr::Query(query) => set_expr_is_read_only(&query.body),
+    SetExpr::SetOperation { left, right, .. } => set_expr_is_read_only(left) && set_expr_is_read_only(right),
+    SetExpr::Values(_) | SetExpr::Table(_) => true,
+    // `Insert` / `Update` / `Delete` bodies (data-modifying CTEs) and any
+    // future variant — refused, fail-closed.
     _ => false,
   }
 }
@@ -188,6 +191,24 @@ mod tests {
       ensure_single_read_query(&PostgreSqlDialect {}, "SELECT 1 INTO foo").is_err(),
       "SELECT … INTO <table> must be refused"
     );
+  }
+
+  #[test]
+  fn refuses_data_modifying_cte_with_a_write_body() {
+    // `sqlparser` models `WITH … INSERT/UPDATE/DELETE` as a `Query` whose *body*
+    // is the write (#10 covered the inverse — a `SELECT` wrapping a writing
+    // CTE). The read-only whitelist must refuse it, not pass it to the backend.
+    // Verified red against a fail-open `_ => true` predicate.
+    for sql in [
+      "WITH c AS (SELECT 1 AS x) INSERT INTO t (x) SELECT x FROM c",
+      "WITH c AS (SELECT 1) UPDATE t SET x = 1",
+      "WITH c AS (SELECT 1) DELETE FROM t",
+    ] {
+      assert!(
+        ensure_single_read_query(&PostgreSqlDialect {}, sql).is_err(),
+        "a data-modifying CTE must be refused on the read path: {sql}"
+      );
+    }
   }
 
   #[test]

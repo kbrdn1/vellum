@@ -203,10 +203,17 @@ impl PostgresDriver {
   /// columns.
   async fn introspect_columns(&self, schema: &str, relation: &str) -> Result<Vec<catalog::Column>> {
     let pk_rows = sqlx::query(
+      // Join on the table too, not just the constraint name/schema — Postgres
+      // allows the same constraint name on different tables of one schema, so a
+      // name-only join would pull a sibling table's PK columns into this set and
+      // wrongly flag a homonym column as a primary key.
       "SELECT kcu.column_name FROM information_schema.table_constraints tc \
        JOIN information_schema.key_column_usage kcu \
-         ON tc.constraint_name = kcu.constraint_name \
+         ON tc.constraint_catalog = kcu.constraint_catalog \
         AND tc.constraint_schema = kcu.constraint_schema \
+        AND tc.constraint_name = kcu.constraint_name \
+        AND tc.table_schema = kcu.table_schema \
+        AND tc.table_name = kcu.table_name \
        WHERE tc.constraint_type = 'PRIMARY KEY' \
          AND tc.table_schema = $1 AND tc.table_name = $2",
     )

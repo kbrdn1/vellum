@@ -786,6 +786,52 @@ mod postgres_it {
       "a user schema named like `pg...` (no literal `pg_`) must not be dropped"
     );
   }
+
+  #[tokio::test]
+  async fn pg_introspection_pk_does_not_leak_across_same_named_constraints() {
+    // A PK on one table and a FK on another can share a constraint name in one
+    // schema (the PK backs a schema-unique index; the FK does not). Both then
+    // appear in `key_column_usage` under that name — so introspecting the PK
+    // table must constrain the join to that table, or the FK table's column
+    // leaks into the PK set and a homonym is wrongly flagged.
+    let pool = seed_pool().await;
+    pool
+      .execute("drop schema if exists it_dup cascade")
+      .await
+      .expect("drop schema");
+    pool.execute("create schema it_dup").await.expect("create schema");
+    // t_a: PK `pk_col` (constraint `shared_name`) plus a plain `other_col`.
+    pool
+      .execute("create table it_dup.t_a (pk_col int constraint shared_name primary key, other_col int)")
+      .await
+      .expect("create t_a");
+    // t_b: a FK *also* named `shared_name`, on a column named `other_col`.
+    pool
+      .execute(
+        "create table it_dup.t_b (other_col int, \
+         constraint shared_name foreign key (other_col) references it_dup.t_a(pk_col))",
+      )
+      .await
+      .expect("create t_b");
+
+    let driver = PostgresDriver::connect(&dsn()).await.expect("connect read-only");
+    let catalog = driver.introspect().await.expect("introspect the schema");
+    let schema = catalog
+      .databases
+      .first()
+      .unwrap()
+      .schema("it_dup")
+      .expect("schema it_dup");
+    let t_a = schema.relation("t_a").expect("relation t_a");
+    assert!(
+      t_a.column("pk_col").expect("column pk_col").primary_key,
+      "t_a.pk_col is the primary key"
+    );
+    assert!(
+      !t_a.column("other_col").expect("column other_col").primary_key,
+      "t_a.other_col must NOT be flagged PK — it is t_b's FK column under the same constraint name"
+    );
+  }
 }
 
 /// MySQL integration tests — behind the `it-db` feature (default `cargo test`
