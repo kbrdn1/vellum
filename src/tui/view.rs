@@ -240,7 +240,7 @@ fn render_grid(frame: &mut Frame, app: &App, area: Rect) {
 /// Bottom bar: key hints on the left, the context breadcrumb
 /// (`schema.relation`) pinned right.
 fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
-  let line = status_line(&app.context_label(), area.width as usize);
+  let line = status_line(&app.context_label(), app.fetch_error(), area.width as usize);
   frame.render_widget(Paragraph::new(line), area);
 }
 
@@ -283,7 +283,7 @@ pub fn header_line(label: &str, width: usize) -> Line<'static> {
 /// left free for the log / status message (#85) — the hints are *not* pinned
 /// right. The context is reserved first so it survives when the hints must
 /// shrink; it is dropped only when even it can't fit.
-pub fn status_line(context: &str, width: usize) -> Line<'static> {
+pub fn status_line(context: &str, _message: Option<&str>, width: usize) -> Line<'static> {
   const HINTS: &str = " Tab focus · Enter open · n/p page · s sort · q quit ";
   if width == 0 {
     return Line::default();
