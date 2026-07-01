@@ -285,6 +285,7 @@ impl App {
       paginator.record(result.rows.len());
       result.rows.truncate(paginator.visible());
       self.table = TableState::new(result);
+      self.fetch_error = None; // a successful page clears the last fetch error (#85)
     }
   }
 

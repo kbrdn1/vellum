@@ -66,9 +66,8 @@ async fn browse_loop(terminal: &mut ratatui::DefaultTerminal, driver: &SqliteDri
     }
     if let Some(target) = app.take_page_target() {
       let sql = page_sql(&target);
-      let result = driver.query(&sql).await?;
-      app.set_displayed_query(sql);
-      app.apply_page(result);
+      let result = driver.query(&sql).await;
+      apply_fetch(app, sql, result, &target.relation);
     }
     if app.should_quit() {
       break;
@@ -83,8 +82,15 @@ async fn browse_loop(terminal: &mut ratatui::DefaultTerminal, driver: &SqliteDri
 /// loop keeps going — a query error must never end the session (#85). Pure over
 /// `App` state (no terminal / no I/O), so the routing is unit-tested.
 pub fn apply_fetch(app: &mut App, sql: String, result: Result<QueryResult>, relation: &RelationRef) {
-  // stub: routing lands in the green step.
-  let _ = (app, sql, result, relation);
+  match result {
+    Ok(rows) => {
+      app.set_displayed_query(sql);
+      app.apply_page(rows); // also clears any prior fetch error
+    }
+    Err(e) => {
+      app.set_fetch_error(format!("{}.{}: {e}", relation.schema, relation.relation));
+    }
+  }
 }
 
 /// Build the read-only page query for a browse fetch: `SELECT * FROM
