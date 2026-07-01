@@ -67,6 +67,16 @@ fn horizontal_scroll_reveals_later_columns() {
   assert!(out.contains("c1"), "scrolled-to column should appear:\n{out}");
 }
 
+#[test]
+fn one_shot_table_keeps_the_vellum_title_and_no_browse_counter() {
+  // The one-shot result view (no sidebar) must not inherit the browse-only
+  // chrome (#86 was scoped browse-only): it stays titled `vellum` with no
+  // `N of N` cursor counter leaking in from the browse path.
+  let out = render_to_string(&app_with(2, 3), 40, 10);
+  assert!(out.contains("vellum"), "one-shot keeps the vellum title:\n{out}");
+  assert!(!out.contains(" of "), "no browse row counter in one-shot:\n{out}");
+}
+
 // ── Browse two-pane render (#83) ──────────────────────────────────────────
 
 use vellum::driver::Capabilities;
@@ -197,4 +207,13 @@ fn status_line_shows_the_hints_and_pins_the_range() {
   let text = flat(&status_line("rows 1-50", 80));
   assert!(text.contains("sort"), "key hints present: {text:?}");
   assert!(text.contains("rows 1-50"), "range pinned: {text:?}");
+}
+
+#[test]
+fn status_line_keeps_the_range_pinned_by_shrinking_the_hints() {
+  // At a medium width the full hints + range don't both fit; the range must
+  // stay pinned right (the hints shrink to make room) rather than vanish.
+  let text = flat(&status_line("rows 1-50", 60));
+  assert!(text.contains("rows 1-50"), "range stays pinned: {text:?}");
+  assert_eq!(text.chars().count(), 60, "still padded to the exact width");
 }
