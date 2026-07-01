@@ -72,34 +72,25 @@ fn render_sidebar(frame: &mut Frame, app: &App, area: Rect) {
       for &anc_last in &last_at_depth {
         prefix.push_str(if anc_last { "   " } else { "│  " });
       }
-      let branch = if node.is_last { "└" } else { "├" };
-      // The expand state rides the connector's second cell: `─` for a leaf,
-      // `▾`/`▸` for an expandable node.
-      let mark = if node.expandable {
-        if node.expanded {
-          "▾"
-        } else {
-          "▸"
-        }
-      } else {
-        "─"
-      };
+      let branch = if node.is_last { "└─" } else { "├─" };
       let icon = sidebar_icon(node.kind);
       let count = node.count.map(|c| format!(" ({c})")).unwrap_or_default();
       last_at_depth.push(node.is_last);
-      ListItem::new(format!("{prefix}{branch}{mark} {icon} {}{count}", node.label))
+      ListItem::new(format!("{prefix}{branch} {icon} {}{count}", node.label))
     })
     .collect();
   let title = format!(" [1] Schema ({}) ", sidebar.schema_count());
-  // No `highlight_symbol` — a prefix would shift the selected row and break the
-  // tree-guide alignment; the reversed row is cursor enough.
+  // A left-pinned cursor follows the selection; ratatui reserves the symbol
+  // gutter on every row, so the tree guides stay aligned. No `▾`/`▸` expand
+  // glyphs — the reversed row + cursor mark the selection instead.
   let list = List::new(items)
     .block(
       Block::bordered()
         .title(title)
         .border_style(focus_style(app.focus() == Focus::Sidebar)),
     )
-    .highlight_style(Style::new().add_modifier(Modifier::REVERSED));
+    .highlight_style(Style::new().add_modifier(Modifier::REVERSED))
+    .highlight_symbol("▶ ");
   let mut state = ListState::default();
   if !nodes.is_empty() {
     state.select(Some(sidebar.selected()));

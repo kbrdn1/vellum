@@ -18,10 +18,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **Phase 1 — schema tree icons + connector guides (#89):** the browse sidebar
   renders like gwm's working-tree pane — a per-kind glyph on each node
   (database / schema-folder / table / view / column) preceded by tree connector
-  lines (`├─` / `└─` with `│` carried down from ancestors). The expand state
-  rides the connector's second cell (`▾` / `▸` for expandable, `─` for a leaf).
-  The row-cursor drops its `▶` prefix so the guides stay aligned (the reversed
-  row marks the cursor). Requires a nerd font — the same assumption gwm makes.
+  lines (`├─` / `└─` with `│` carried down from ancestors). There are no
+  `▾` / `▸` expand glyphs — a left-pinned `▶` cursor follows the highlighted row
+  instead (ratatui reserves the symbol gutter on every row, so the guides stay
+  aligned). Requires a nerd font — the same assumption gwm makes.
 - **Phase 1 — browse UI polish, gwm-style (#86):** the browse render moves to a
   `header / body / status` stack. A header line badges the database and pins a
   `vellum <version>` chip; the status line carries the key hints with the page

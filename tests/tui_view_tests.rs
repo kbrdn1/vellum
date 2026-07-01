@@ -261,6 +261,31 @@ fn browse_sidebar_draws_tree_guides() {
 }
 
 #[test]
+fn browse_sidebar_has_no_expand_glyphs_and_a_left_cursor() {
+  // No `▾`/`▸` expand markers; instead a left-pinned cursor `▶` that follows the
+  // highlighted (selected) row.
+  let mut app = browse_app();
+  app.on_key(' '); // expand the db; the cursor stays on the db (index 0)
+  let lines = render_lines(&app, 80, 12);
+  let joined = lines.join("\n");
+  assert!(
+    !joined.contains('▾') && !joined.contains('▸'),
+    "no expand markers in the tree:\n{joined}"
+  );
+  let cursor_rows: Vec<&String> = lines.iter().filter(|l| l.contains('▶')).collect();
+  assert_eq!(
+    cursor_rows.len(),
+    1,
+    "exactly one cursor row (the selection):\n{joined}"
+  );
+  assert!(
+    cursor_rows[0].contains("main"),
+    "the cursor marks the selected (db) row:\n{}",
+    cursor_rows[0]
+  );
+}
+
+#[test]
 fn browse_sidebar_icons_cover_every_node_kind() {
   // Pin ALL five glyph arms, not just db/table (#90 review): a catalog with
   // schemas shown, a table AND a view, and an expanded table's columns — so the
