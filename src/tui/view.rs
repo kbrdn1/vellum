@@ -9,14 +9,22 @@
 
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::{Line, Span};
+use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Cell, List, ListItem, ListState, Paragraph, Row, Table, TableState};
 use ratatui::Frame;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
+use crate::model::{TypeKind, Value};
 use crate::tui::app::{App, Focus};
 use crate::tui::state::sidebar::SidebarKind;
 use crate::tui::state::sort::{Sort, SortDir};
+use crate::tui::theme::Theme;
+
+/// The active palette. vellum ships claude-dark as the default and only theme;
+/// every colour in the render path reads a role off this constant rather than
+/// hard-coding a ratatui base colour. When a configurable `[theme]` lands, this
+/// becomes `app.theme()` — the call sites already read roles, not literals.
+const THEME: Theme = Theme::claude_dark();
 
 /// Upper bound on a single column's rendered width, so one very wide cell can't
 /// push every other column off-screen.
@@ -87,8 +95,8 @@ fn render_sidebar(frame: &mut Frame, app: &App, area: Rect) {
   let title = format!(" [1] Schema ({}) ", sidebar.schema_count());
   // A left-pinned cursor follows the selection; ratatui reserves the symbol
   // gutter on every row, so the tree guides stay aligned. No `▾`/`▸` expand
-  // glyphs — the reversed row + cursor mark the selection instead. A `N of M`
-  // node counter sits bottom-right, mirroring the table pane.
+  // glyphs — the `selection_bg` fill + cursor mark the selection instead. A
+  // `N of M` node counter sits bottom-right, mirroring the table pane.
   let mut block = Block::bordered()
     .title(title)
     .border_style(focus_style(app.focus() == Focus::Sidebar));
@@ -97,7 +105,7 @@ fn render_sidebar(frame: &mut Frame, app: &App, area: Rect) {
   }
   let list = List::new(items)
     .block(block)
-    .highlight_style(Style::new().add_modifier(Modifier::REVERSED))
+    .highlight_style(Style::new().bg(THEME.selection_bg))
     .highlight_symbol("▶ ");
   let mut state = ListState::default();
   if !nodes.is_empty() {
@@ -124,9 +132,9 @@ fn sidebar_icon(kind: SidebarKind) -> &'static str {
 /// foreground (`fg == None`).
 fn sidebar_style(kind: SidebarKind) -> Style {
   match kind {
-    SidebarKind::Schema => Style::new().fg(Color::Yellow),
-    SidebarKind::View => Style::new().fg(Color::Magenta),
-    _ => Style::new(),
+    SidebarKind::Schema => Style::new().fg(THEME.schema),
+    SidebarKind::View => Style::new().fg(THEME.view),
+    _ => Style::new().fg(THEME.text),
   }
 }
 
@@ -178,10 +186,7 @@ fn result_block(app: &App, browse: bool) -> Block<'static> {
 fn render_query(frame: &mut Frame, app: &App, area: Rect) {
   let query = truncate(app.displayed_query().unwrap_or(""), area.width as usize);
   frame.render_widget(
-    Paragraph::new(Line::from(Span::styled(
-      query,
-      Style::new().add_modifier(Modifier::DIM),
-    ))),
+    Paragraph::new(Line::from(Span::styled(query, Style::new().fg(THEME.dim)))),
     area,
   );
 }
@@ -191,27 +196,49 @@ fn render_query(frame: &mut Frame, app: &App, area: Rect) {
 fn render_rule(frame: &mut Frame, area: Rect) {
   let rule = "─".repeat(area.width as usize);
   frame.render_widget(
-    Paragraph::new(Line::from(Span::styled(rule, Style::new().add_modifier(Modifier::DIM)))),
+    Paragraph::new(Line::from(Span::styled(rule, Style::new().fg(THEME.muted)))),
     area,
   );
 }
 
 /// The result grid into `area` (no block — the caller draws the chrome). The
-/// header is bold, the selected row reversed; columns are widthed to their
-/// widest visible cell (clamped) after skipping the horizontally-scrolled
-/// leading columns.
+/// header is on the accent (bold), the selected row a `selection_bg` surface
+/// fill (not a reverse), `NULL` cells muted, and numeric columns right-aligned;
+/// columns are widthed to their widest visible cell (clamped) after skipping
+/// the horizontally-scrolled leading columns.
 fn render_grid(frame: &mut Frame, app: &App, area: Rect) {
   let state = app.table();
   let offset = state.col_offset();
   let col_count = state.columns().len();
+  // Numeric columns hug the right edge so decimals line up down the column.
+  let numeric = |i: usize| matches!(state.columns()[i].kind, TypeKind::Int | TypeKind::Float);
 
-  let header = Row::new(state.columns().iter().skip(offset).map(|c| Cell::from(c.name.clone())))
-    .style(Style::new().add_modifier(Modifier::BOLD));
+  // Header on the accent (bold) so it detaches from the data; numeric headers
+  // right-align to sit above their column's right-aligned values.
+  let header = Row::new(state.columns().iter().enumerate().skip(offset).map(|(i, c)| {
+    let mut line = Line::from(c.name.clone());
+    if numeric(i) {
+      line = line.right_aligned();
+    }
+    Cell::from(Text::from(line))
+  }))
+  .style(Style::new().fg(THEME.accent).add_modifier(Modifier::BOLD));
 
-  let rows = state
-    .rows()
-    .iter()
-    .map(|row| Row::new(row.iter().skip(offset).map(|v| Cell::from(v.to_string()))));
+  let rows = state.rows().iter().map(|row| {
+    Row::new(row.iter().enumerate().skip(offset).map(|(i, v)| {
+      // A NULL reads as absent (muted); every other value is primary text.
+      let fg = if matches!(v, Value::Null) {
+        THEME.muted
+      } else {
+        THEME.text
+      };
+      let mut line = Line::from(Span::styled(v.to_string(), Style::new().fg(fg)));
+      if numeric(i) {
+        line = line.right_aligned();
+      }
+      Cell::from(Text::from(line))
+    }))
+  });
 
   let widths: Vec<Constraint> = (offset..col_count)
     .map(|i| {
@@ -225,10 +252,13 @@ fn render_grid(frame: &mut Frame, app: &App, area: Rect) {
     })
     .collect();
 
+  // The selected row is a surface fill (selection_bg), not a reverse: each
+  // cell keeps its own fg, so the values stay legible. A single left cursor
+  // marks it — no doubled glyph over a reversed bar.
   let table = Table::new(rows, widths)
     .header(header)
-    .row_highlight_style(Style::new().add_modifier(Modifier::REVERSED))
-    .highlight_symbol(">> ");
+    .row_highlight_style(Style::new().bg(THEME.selection_bg))
+    .highlight_symbol("▶ ");
 
   let mut ts = TableState::default();
   if !state.rows().is_empty() {
@@ -267,9 +297,11 @@ pub fn header_line(label: &str, width: usize) -> Line<'static> {
     used = badge.width();
     spans.push(Span::styled(
       badge,
+      // ponytail: Black is the contrast fg on a light accent badge, not a
+      // themeable role — same for the status context chip below.
       Style::new()
-        .bg(Color::Blue)
-        .fg(Color::White)
+        .bg(THEME.accent)
+        .fg(Color::Black)
         .add_modifier(Modifier::BOLD),
     ));
   }
@@ -302,13 +334,14 @@ pub fn status_line(context: &str, message: Option<&str>, width: usize) -> Line<'
     return Line::default();
   }
 
+  // ponytail: Black is the contrast fg on the light accent chip, not a role.
   let context_style = Style::new()
-    .bg(Color::Cyan)
+    .bg(THEME.accent)
     .fg(Color::Black)
     .add_modifier(Modifier::BOLD);
-  let key_style = Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD);
-  let label_style = Style::new().add_modifier(Modifier::DIM);
-  let log_style = Style::new().fg(Color::Red);
+  let key_style = Style::new().fg(THEME.accent).add_modifier(Modifier::BOLD);
+  let label_style = Style::new().fg(THEME.muted);
+  let log_style = Style::new().fg(THEME.error);
 
   // The log rides the right, bracketed. Collapse control chars so an error
   // carrying a newline/tab can't split this single row.
@@ -434,12 +467,12 @@ fn truncate(s: &str, max: usize) -> String {
   out
 }
 
-/// Accent (cyan, bold) border when a pane has focus, dim (dark gray) otherwise —
-/// a visible colour diff, not just a weight change.
+/// Focus (orange, bold) border when a pane has focus, muted grey otherwise — a
+/// visible colour diff, not just a weight change.
 fn focus_style(focused: bool) -> Style {
   if focused {
-    Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+    Style::new().fg(THEME.focus).add_modifier(Modifier::BOLD)
   } else {
-    Style::new().fg(Color::DarkGray)
+    Style::new().fg(THEME.muted)
   }
 }
