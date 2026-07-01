@@ -8,7 +8,7 @@
 //! `tui_view_tests.rs`; the render fns just place them.
 
 use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::{Modifier, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Cell, List, ListItem, ListState, Paragraph, Row, Table, TableState};
 use ratatui::Frame;
@@ -226,17 +226,24 @@ pub fn header_line(label: &str, width: usize) -> Line<'static> {
   if !label.is_empty() {
     let badge = truncate(&format!(" {label} "), width - version_w);
     used = badge.width();
-    spans.push(Span::styled(badge, Style::new().add_modifier(Modifier::BOLD)));
+    spans.push(Span::styled(
+      badge,
+      Style::new()
+        .bg(Color::Blue)
+        .fg(Color::White)
+        .add_modifier(Modifier::BOLD),
+    ));
   }
   spans.push(Span::raw(" ".repeat(width.saturating_sub(used + version_w))));
   spans.push(Span::styled(version, version_style));
   Line::from(spans)
 }
 
-/// gwm-style: the context breadcrumb pinned to the left (bold), the key hints
-/// filling the rest to the right (dim), padded to `width`. The context is
-/// reserved first so it survives when the hints must shrink; it is dropped only
-/// when even it can't fit.
+/// gwm-style: the coloured context breadcrumb pinned to the left, the key hints
+/// immediately after it (dim), then blank padding to `width`. The right edge is
+/// left free for the log / status message (#85) — the hints are *not* pinned
+/// right. The context is reserved first so it survives when the hints must
+/// shrink; it is dropped only when even it can't fit.
 pub fn status_line(context: &str, width: usize) -> Line<'static> {
   const HINTS: &str = " Tab focus · Enter open · n/p page · s sort · q quit ";
   if width == 0 {
@@ -254,10 +261,16 @@ pub fn status_line(context: &str, width: usize) -> Line<'static> {
   let hints_w = hints.width();
   let mut spans = Vec::new();
   if fits {
-    spans.push(Span::styled(context_text, Style::new().add_modifier(Modifier::BOLD)));
+    spans.push(Span::styled(
+      context_text,
+      Style::new()
+        .bg(Color::Cyan)
+        .fg(Color::Black)
+        .add_modifier(Modifier::BOLD),
+    ));
   }
-  spans.push(Span::raw(" ".repeat(width - shown_context_w - hints_w)));
   spans.push(Span::styled(hints, Style::new().add_modifier(Modifier::DIM)));
+  spans.push(Span::raw(" ".repeat(width - shown_context_w - hints_w)));
   Line::from(spans)
 }
 

@@ -240,6 +240,7 @@ fn browse_renders_an_unopened_table_pane_without_panicking() {
 
 // ── Pure line/counter builders (#86, gwm-style — no ratatui backend) ───────
 
+use ratatui::style::Color;
 use ratatui::text::Line;
 use vellum::tui::state::sort::toggle_sort;
 use vellum::tui::view::{header_line, row_counter, sort_indicator, status_line};
@@ -267,6 +268,22 @@ fn header_line_without_a_database_is_just_the_padded_version() {
 #[test]
 fn header_line_zero_width_is_empty() {
   assert_eq!(flat(&header_line("main", 0)), "");
+}
+
+#[test]
+fn header_line_badges_the_engine_with_a_background_colour() {
+  // The engine label reads as a filled badge (a background), not plain text.
+  let line = header_line("sqlite", 40);
+  let badge = line
+    .spans
+    .iter()
+    .find(|s| s.content.contains("sqlite"))
+    .expect("engine badge span");
+  assert_eq!(
+    badge.style.bg,
+    Some(Color::Blue),
+    "the engine label is a coloured badge"
+  );
 }
 
 #[test]
@@ -329,4 +346,31 @@ fn status_line_keeps_the_context_by_shrinking_the_hints() {
   let text = flat(&status_line("main.users", 40));
   assert!(text.contains("main.users"), "context stays: {text:?}");
   assert_eq!(text.chars().count(), 40, "still padded to the exact width");
+}
+
+#[test]
+fn status_line_places_the_hints_right_after_the_context() {
+  // Context then hints, adjacent on the left; the right side is left blank
+  // (reserved for the log message, #85) — the hints are NOT pinned right.
+  let text = flat(&status_line("main.users", 80));
+  let ctx_end = text.find("main.users").unwrap() + "main.users".len();
+  let hints = text.find("Tab focus").expect("hints present");
+  assert!(hints <= ctx_end + 2, "hints follow the context immediately: {text:?}");
+  assert!(text.ends_with(' '), "the right side is blank (log slot): {text:?}");
+}
+
+#[test]
+fn status_line_badges_the_context_with_a_background_colour() {
+  // "colour" = a filled badge (a background), gwm-style — not just a fg tint.
+  let line = status_line("main.users", 80);
+  let ctx_span = line
+    .spans
+    .iter()
+    .find(|s| s.content.contains("main.users"))
+    .expect("context span");
+  assert_eq!(
+    ctx_span.style.bg,
+    Some(Color::Cyan),
+    "the context breadcrumb is a coloured badge"
+  );
 }
