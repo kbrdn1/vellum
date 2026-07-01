@@ -219,6 +219,20 @@ fn page_loaded_label_counts_loaded_rows_without_a_count_query() {
 }
 
 #[test]
+fn set_fetch_error_surfaces_the_message() {
+  // #85: a failed page fetch is recorded on the App so the status line can show
+  // it — the session stays alive instead of the `?` ending the TUI.
+  let mut app = App::browse(catalog(), caps(false), Backend::Sqlite);
+  assert_eq!(app.fetch_error(), None, "no error at rest");
+  app.set_fetch_error("public.orders: driver error: boom".into());
+  assert_eq!(
+    app.fetch_error(),
+    Some("public.orders: driver error: boom"),
+    "the fetch error is surfaced"
+  );
+}
+
+#[test]
 fn browse_starts_focused_on_the_sidebar() {
   let app = App::browse(catalog(), caps(true), Backend::Sqlite);
   assert_eq!(app.focus(), Focus::Sidebar);

@@ -12,6 +12,7 @@ use crate::driver::{Driver, SqliteDriver};
 use crate::error::Result;
 use crate::model::QueryResult;
 use crate::tui::app::{App, PageTarget};
+use crate::tui::state::sidebar::RelationRef;
 use crate::tui::view;
 
 /// Launch the scrollable table UI over `result`. Enters raw mode + the
@@ -65,15 +66,32 @@ async fn browse_loop(terminal: &mut ratatui::DefaultTerminal, driver: &SqliteDri
     }
     if let Some(target) = app.take_page_target() {
       let sql = page_sql(&target);
-      let result = driver.query(&sql).await?;
-      app.set_displayed_query(sql);
-      app.apply_page(result);
+      let result = driver.query(&sql).await;
+      apply_fetch(app, sql, result, &target.relation);
     }
     if app.should_quit() {
       break;
     }
   }
   Ok(())
+}
+
+/// Route a finished browse fetch back into `App`. On success, record the query
+/// that ran and feed the rows in (which clears any prior error); on failure,
+/// stash the error on the status line and **return normally** so the browse
+/// loop keeps going — a query error must never end the session (#85). Pure over
+/// `App` state (no terminal / no I/O), so the routing is unit-tested.
+pub fn apply_fetch(app: &mut App, sql: String, result: Result<QueryResult>, relation: &RelationRef) {
+  match result {
+    Ok(rows) => {
+      app.set_displayed_query(sql);
+      app.apply_page(rows); // also clears any prior fetch error
+    }
+    Err(e) => {
+      app.set_fetch_error(format!("{}.{}: {e}", relation.schema, relation.relation));
+      app.clear_page(); // don't leave the old relation's rows under the new title
+    }
+  }
 }
 
 /// Build the read-only page query for a browse fetch: `SELECT * FROM

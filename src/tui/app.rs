@@ -49,7 +49,21 @@ pub struct App {
   /// The engine this browse session talks to (`None` in one-shot / query mode) —
   /// the `[sqlite]`-style header badge.
   backend: Option<Backend>,
+  /// The last browse fetch error, surfaced on the status line (#85). Set when a
+  /// page query fails; cleared by [`apply_page`](App::apply_page) on the next
+  /// successful fetch. `None` at rest and outside browse mode.
+  fetch_error: Option<String>,
   quit: bool,
+}
+
+/// An empty result grid — the initial table for browse/query mode and the
+/// placeholder a cleared page falls back to.
+fn empty_result() -> QueryResult {
+  QueryResult {
+    columns: Vec::new(),
+    rows: Vec::new(),
+    affected: None,
+  }
 }
 
 /// What the runtime should fetch for the browse table, derived entirely from
@@ -83,6 +97,7 @@ impl App {
       current_relation: None,
       displayed_query: None,
       backend: None,
+      fetch_error: None,
       quit: false,
     }
   }
@@ -91,11 +106,7 @@ impl App {
   /// that selecting a relation fills (#15). Focus starts on the sidebar.
   /// `capabilities.schemas` collapses the schema level for engines without one.
   pub fn browse(catalog: Catalog, capabilities: Capabilities, backend: Backend) -> Self {
-    let empty = QueryResult {
-      columns: Vec::new(),
-      rows: Vec::new(),
-      affected: None,
-    };
+    let empty = empty_result();
     Self {
       table: TableState::new(empty),
       sidebar: Some(SidebarState::new(catalog, capabilities.schemas)),
@@ -110,6 +121,7 @@ impl App {
       current_relation: None,
       displayed_query: None,
       backend: Some(backend),
+      fetch_error: None,
       quit: false,
     }
   }
@@ -118,11 +130,7 @@ impl App {
   /// (#16). Focus starts on the editor; `Tab` toggles editor↔table; submitting
   /// (Ctrl-Enter) emits a run-query intent the runtime services read-only.
   pub fn query() -> Self {
-    let empty = QueryResult {
-      columns: Vec::new(),
-      rows: Vec::new(),
-      affected: None,
-    };
+    let empty = empty_result();
     Self {
       table: TableState::new(empty),
       sidebar: None,
@@ -137,6 +145,7 @@ impl App {
       current_relation: None,
       displayed_query: None,
       backend: None,
+      fetch_error: None,
       quit: false,
     }
   }
@@ -195,6 +204,20 @@ impl App {
   /// Record the SQL the runtime just ran for the displayed page.
   pub fn set_displayed_query(&mut self, sql: String) {
     self.displayed_query = Some(sql);
+  }
+
+  /// The current browse fetch error, if the last page query failed — shown on
+  /// the status line (#85). `None` in one-shot/query mode or after a successful
+  /// fetch (cleared by [`apply_page`](Self::apply_page)).
+  pub fn fetch_error(&self) -> Option<&str> {
+    self.fetch_error.as_deref()
+  }
+
+  /// Record a browse fetch failure so the status line can surface it while the
+  /// session stays alive (the runtime catches the query error instead of
+  /// letting it end the TUI). Cleared on the next successful page.
+  pub fn set_fetch_error(&mut self, message: String) {
+    self.fetch_error = Some(message);
   }
 
   /// The SQL editor buffer, if in query mode (read-only, for the view).
@@ -264,6 +287,21 @@ impl App {
       paginator.record(result.rows.len());
       result.rows.truncate(paginator.visible());
       self.table = TableState::new(result);
+      self.fetch_error = None; // a successful page clears the last fetch error (#85)
+    }
+  }
+
+  /// Drop the displayed page — empty the grid and zero the loaded count —
+  /// without touching the pagination cursor. Called when a browse fetch fails so
+  /// the previous relation's rows can't linger under the new relation's title
+  /// (#85). No-op outside browse mode (nothing paginated to clear).
+  pub fn clear_page(&mut self) {
+    if let Some(paginator) = self.paginator.as_mut() {
+      paginator.record(0);
+      self.table = TableState::new(empty_result());
+      // Drop the query that produced the now-cleared page so the query line
+      // doesn't show stale SQL over an empty grid.
+      self.displayed_query = None;
     }
   }
 

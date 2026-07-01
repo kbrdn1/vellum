@@ -490,7 +490,7 @@ fn browse_renders_an_unopened_table_pane_without_panicking() {
 
 // ── Pure line/counter builders (#86, gwm-style — no ratatui backend) ───────
 
-use ratatui::style::Color;
+use ratatui::style::{Color, Modifier};
 use ratatui::text::Line;
 use vellum::tui::state::sort::toggle_sort;
 use vellum::tui::view::{header_line, row_counter, sort_indicator, status_line};
@@ -582,7 +582,7 @@ fn sort_indicator_shows_only_the_descending_case() {
 #[test]
 fn status_line_pins_the_context_on_the_left_before_the_hints() {
   // gwm-style: the context breadcrumb reads on the left; the key hints follow.
-  let text = flat(&status_line("main.users", 80));
+  let text = flat(&status_line("main.users", None, 80));
   assert!(text.contains("sort"), "key hints present: {text:?}");
   let ctx = text.find("main.users").expect("context present");
   let hints = text.find("Tab focus").expect("hints present");
@@ -593,7 +593,7 @@ fn status_line_pins_the_context_on_the_left_before_the_hints() {
 fn status_line_keeps_the_context_by_shrinking_the_hints() {
   // At a medium width the full hints + context don't both fit; the context
   // stays (pinned left) and the hints shrink rather than the context vanishing.
-  let text = flat(&status_line("main.users", 40));
+  let text = flat(&status_line("main.users", None, 40));
   assert!(text.contains("main.users"), "context stays: {text:?}");
   assert_eq!(text.chars().count(), 40, "still padded to the exact width");
 }
@@ -602,7 +602,7 @@ fn status_line_keeps_the_context_by_shrinking_the_hints() {
 fn status_line_places_the_hints_right_after_the_context() {
   // Context then hints, adjacent on the left; the right side is left blank
   // (reserved for the log message, #85) — the hints are NOT pinned right.
-  let text = flat(&status_line("main.users", 80));
+  let text = flat(&status_line("main.users", None, 80));
   let ctx_end = text.find("main.users").unwrap() + "main.users".len();
   let hints = text.find("Tab focus").expect("hints present");
   assert!(hints <= ctx_end + 2, "hints follow the context immediately: {text:?}");
@@ -612,7 +612,7 @@ fn status_line_places_the_hints_right_after_the_context() {
 #[test]
 fn status_line_badges_the_context_with_a_background_colour() {
   // "colour" = a filled badge (a background), gwm-style — not just a fg tint.
-  let line = status_line("main.users", 80);
+  let line = status_line("main.users", None, 80);
   let ctx_span = line
     .spans
     .iter()
@@ -622,5 +622,106 @@ fn status_line_badges_the_context_with_a_background_colour() {
     ctx_span.style.bg,
     Some(Color::Cyan),
     "the context breadcrumb is a coloured badge"
+  );
+}
+
+#[test]
+fn status_line_pins_the_log_message_on_the_right() {
+  // #85: a browse fetch error rides the right of the status line, bracketed
+  // gwm-style, flush to the edge; the context + hints stay on the left.
+  let text = flat(&status_line("main.users", Some("orders: no such table"), 80));
+  assert!(text.contains("main.users"), "context still on the left: {text:?}");
+  assert!(text.contains("Tab focus"), "hints still present: {text:?}");
+  assert!(
+    text.trim_end().ends_with("[orders: no such table]"),
+    "the log is bracketed and pinned right: {text:?}"
+  );
+}
+
+#[test]
+fn status_line_omits_the_brackets_without_a_message() {
+  // No message -> no empty `[]`; the right slot just stays blank (guards against
+  // porting gwm's always-bracketed status).
+  let text = flat(&status_line("main.users", None, 80));
+  assert!(!text.contains('['), "no empty brackets when there is no log: {text:?}");
+  assert!(text.ends_with(' '), "the right slot stays blank: {text:?}");
+}
+
+#[test]
+fn status_line_survives_the_log_when_the_row_is_tight() {
+  // Priority floor, gwm-style: when it's narrow the log wins — it clips alone
+  // rather than a hint eating the error surface.
+  let line = status_line("main.users", Some("boom"), 8);
+  let text = flat(&line);
+  assert_eq!(text.chars().count(), 8, "still exactly the width");
+  assert!(
+    text.contains("boom") || text.contains('…'),
+    "the log survives tight width: {text:?}"
+  );
+}
+
+#[test]
+fn status_line_styles_the_hint_keys_like_gwm() {
+  // gwm footer: the key glyph stands out (bold), the label reads muted — not one
+  // flat dim run.
+  let line = status_line("main.users", None, 80);
+  let key = line
+    .spans
+    .iter()
+    .find(|s| s.content == "Tab")
+    .expect("a distinct hint-key span");
+  assert!(
+    key.style.add_modifier.contains(Modifier::BOLD),
+    "the hint key is bold: {:?}",
+    key.style
+  );
+  let label = line
+    .spans
+    .iter()
+    .find(|s| s.content.contains("focus"))
+    .expect("a hint-label span");
+  assert!(
+    !label.style.add_modifier.contains(Modifier::BOLD),
+    "the hint label is not bold (muted): {:?}",
+    label.style
+  );
+}
+
+#[test]
+fn status_line_never_exceeds_the_requested_width() {
+  // Regression (codex #91 P2): when the hints truncate, the `…` marker plus its
+  // separating space must fit inside `width` — not spill a cell past it (e.g.
+  // `status_line("", None, 10)` was 11 cells).
+  for w in 4..48 {
+    let logged = flat(&status_line("main.users", Some("a fairly long error message"), w));
+    assert!(
+      logged.chars().count() <= w,
+      "logged, width {w}: {logged:?} = {}",
+      logged.chars().count()
+    );
+    let bare = flat(&status_line("", None, w));
+    assert!(
+      bare.chars().count() <= w,
+      "bare, width {w}: {bare:?} = {}",
+      bare.chars().count()
+    );
+  }
+}
+
+#[test]
+fn status_line_colours_the_log_message() {
+  // The error surface is visibly an error — a red-ish foreground, not the muted
+  // hint colour.
+  let line = status_line("main.users", Some("boom"), 80);
+  let log = line
+    .spans
+    .iter()
+    .find(|s| s.content.contains("boom"))
+    .expect("a log span");
+  assert_eq!(
+    log.style.fg,
+    Some(Color::Red),
+    "the log reads as an error: {:?}",
+    log.style
   );
 }

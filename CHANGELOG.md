@@ -281,6 +281,19 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the CONTRIBUTING prerequisite are updated to match; CI enforces it via
   `clippy::incompatible_msrv` against `@stable`. (#6)
 
+### Fixed
+
+- **A failed browse page fetch no longer ends the session (#85):** the browse
+  loop used to ride `?` straight out on a query error, restoring the terminal
+  and quitting the whole TUI. The fetch is now routed through `apply_fetch` —
+  on failure it records the error (`schema.relation: <driver message>`) and
+  returns, so the session stays up and navigable; a later successful page
+  clears it. The error rides the right of the status line, bracketed and pinned
+  in red (priority floor: it clips alone before a hint is dropped, and control
+  characters are collapsed so a multi-line error can't split the row). In the
+  same pass the status-line hints move to gwm's keyed style (a bold key + muted
+  label, two spaces between groups) instead of one flat dim run.
+
 ## Past releases
 
 _None yet._
