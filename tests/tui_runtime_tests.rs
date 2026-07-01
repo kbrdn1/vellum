@@ -220,4 +220,9 @@ fn apply_fetch_clears_the_stale_page_on_failure() {
     Some("0"),
     "the stale page is cleared, not left under the new title"
   );
+  assert_eq!(
+    app.displayed_query(),
+    None,
+    "the old successful SQL is cleared too — not shown over an empty grid"
+  );
 }
