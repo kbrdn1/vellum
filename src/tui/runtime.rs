@@ -64,7 +64,9 @@ async fn browse_loop(terminal: &mut ratatui::DefaultTerminal, driver: &SqliteDri
       }
     }
     if let Some(target) = app.take_page_target() {
-      let result = driver.query(&page_sql(&target)).await?;
+      let sql = page_sql(&target);
+      let result = driver.query(&sql).await?;
+      app.set_displayed_query(sql);
       app.apply_page(result);
     }
     if app.should_quit() {

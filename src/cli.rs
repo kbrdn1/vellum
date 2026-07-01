@@ -69,7 +69,7 @@ pub async fn run(cli: Cli) -> Result<()> {
       require_terminal()?;
       let driver = SqliteDriver::open_readonly(&db).await?;
       let catalog = driver.introspect().await?;
-      let app = App::browse(catalog, driver.capabilities());
+      let app = App::browse(catalog, driver.capabilities(), driver.backend());
       tui::browse(driver, app).await
     }
     (None, Some(_)) => Err(VellumError::Arg("--db <FILE> is required to run a query".to_string())),

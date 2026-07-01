@@ -13,7 +13,7 @@
 
 use crate::driver::Capabilities;
 use crate::model::catalog::Catalog;
-use crate::model::QueryResult;
+use crate::model::{Backend, QueryResult};
 use crate::tui::state::editor::EditorState;
 use crate::tui::state::paginate::{PageRequest, Paginator, DEFAULT_PAGE_SIZE};
 use crate::tui::state::sidebar::{RelationRef, SidebarState};
@@ -45,6 +45,10 @@ pub struct App {
   sort: Option<Sort>,
   requery: bool,
   current_relation: Option<RelationRef>,
+  displayed_query: Option<String>,
+  /// The engine this browse session talks to (`None` in one-shot / query mode) —
+  /// the `[sqlite]`-style header badge.
+  backend: Option<Backend>,
   quit: bool,
 }
 
@@ -77,6 +81,8 @@ impl App {
       sort: None,
       requery: false,
       current_relation: None,
+      displayed_query: None,
+      backend: None,
       quit: false,
     }
   }
@@ -84,7 +90,7 @@ impl App {
   /// Browse mode: a schema sidebar over `catalog`, plus an empty result table
   /// that selecting a relation fills (#15). Focus starts on the sidebar.
   /// `capabilities.schemas` collapses the schema level for engines without one.
-  pub fn browse(catalog: Catalog, capabilities: Capabilities) -> Self {
+  pub fn browse(catalog: Catalog, capabilities: Capabilities, backend: Backend) -> Self {
     let empty = QueryResult {
       columns: Vec::new(),
       rows: Vec::new(),
@@ -102,6 +108,8 @@ impl App {
       sort: None,
       requery: false,
       current_relation: None,
+      displayed_query: None,
+      backend: Some(backend),
       quit: false,
     }
   }
@@ -127,6 +135,8 @@ impl App {
       sort: None,
       requery: false,
       current_relation: None,
+      displayed_query: None,
+      backend: None,
       quit: false,
     }
   }
@@ -139,6 +149,52 @@ impl App {
   /// The schema sidebar state, if in browse mode (read-only, for the view).
   pub fn sidebar(&self) -> Option<&SidebarState> {
     self.sidebar.as_ref()
+  }
+
+  /// The relation currently being browsed, if one is open — the table title.
+  pub fn current_relation(&self) -> Option<&RelationRef> {
+    self.current_relation.as_ref()
+  }
+
+  /// The browse connection's database name (from the catalog), for the header.
+  pub fn database_name(&self) -> Option<&str> {
+    self.sidebar.as_ref().and_then(SidebarState::database_name)
+  }
+
+  /// The engine this browse session talks to — the header badge.
+  pub fn backend(&self) -> Option<Backend> {
+    self.backend
+  }
+
+  /// The status-line context breadcrumb: `schema.relation` once a relation is
+  /// open, else the database name (nothing selected yet). Empty in one-shot mode.
+  pub fn context_label(&self) -> String {
+    if let Some(r) = self.current_relation() {
+      format!("{}.{}", r.schema, r.relation)
+    } else {
+      self.database_name().unwrap_or_default().to_string()
+    }
+  }
+
+  /// The `[2] <table> (N)` count for the open relation's pane title: the number
+  /// of rows loaded on the current page, with a `+` when a next page exists
+  /// (no `COUNT(*)` — the browse path never counts). `None` when no page is
+  /// loaded or outside browse mode.
+  pub fn page_loaded_label(&self) -> Option<String> {
+    let paginator = self.paginator.as_ref()?;
+    let more = if paginator.has_next() { "+" } else { "" };
+    Some(format!("{}{more}", paginator.visible()))
+  }
+
+  /// The SQL that produced the currently-displayed page, for the query line.
+  /// Set by the runtime after each successful fetch.
+  pub fn displayed_query(&self) -> Option<&str> {
+    self.displayed_query.as_deref()
+  }
+
+  /// Record the SQL the runtime just ran for the displayed page.
+  pub fn set_displayed_query(&mut self, sql: String) {
+    self.displayed_query = Some(sql);
   }
 
   /// The SQL editor buffer, if in query mode (read-only, for the view).
@@ -222,6 +278,7 @@ impl App {
     self.page_request = None;
     self.sort = None;
     self.requery = false;
+    self.displayed_query = None;
   }
 
   /// Drain any pending browse fetch — a relation just opened, a page just moved,

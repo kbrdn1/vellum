@@ -15,6 +15,29 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Phase 1 — browse UI polish, gwm-style (#86):** the browse render moves to a
+  `header / body / status` stack. A header line badges the database and pins a
+  `vellum <version>` chip; the status line carries the key hints with the page
+  range (`rows X-Y`) pinned right. The result table is now titled with the open
+  relation's name (not the literal "vellum"), shows a descending sort in its
+  top-right corner and a `N of N` cursor counter bottom-right, and renders the
+  page query on its own line above the grid. The sidebar is a fixed, narrower
+  width. The line/counter builders (`header_line`, `status_line`, `row_counter`,
+  `sort_indicator`) are pure — `Line`/`String`, no backend — and unit-tested
+  directly, mirroring gwm's `header_line` / `pane_counter`. The browse-only
+  chrome (relation title, sort indicator, `N of N` counter) is gated so the
+  one-shot `-q` view keeps its plain `vellum` title; the status line reserves the
+  range's width before shrinking the hints so `rows X-Y` stays pinned at medium
+  widths; and the header pads/truncates by terminal **display width** (not `char`
+  count), so a CJK/emoji database name can't overflow the line and shove the
+  version chip off-screen (#88). Following visual review, the chrome moved
+  closer to gwm: the header badges the **engine** (`sqlite`) rather than the
+  database name; the status line shows the `schema.relation` **context**
+  breadcrumb instead of the (now redundant) page range; the panes carry numbered
+  gwm-style titles (`[1] Schema (N)`, `[2] <relation> (<loaded>)`) with the
+  loaded-row count derived without a `COUNT(*)`; the database tree node shows its
+  relation count (`main (N)`) and the cursor is prefixed `▶ `; and the page query
+  nests **inside** the result block above a separator rule, then the grid.
 - **Phase 1 — browse runtime, the UI goes live (#83):** the browse pure-state
   (#14 sidebar, #15 pagination, #19 sort) is now **reachable and rendered**.
   `vellum --db <FILE>` (no SQL) connects SQLite, introspects the schema, and

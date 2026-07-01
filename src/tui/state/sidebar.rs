@@ -53,6 +53,10 @@ pub struct SidebarNode {
   pub label: String,
   pub expandable: bool,
   pub expanded: bool,
+  /// A child count to render in parentheses after the label (gwm-style), e.g.
+  /// the number of relations under a database node. `None` for nodes without a
+  /// meaningful count (relations, columns).
+  pub count: Option<usize>,
 }
 
 /// Cursor + expand state over a catalog tree.
@@ -85,6 +89,19 @@ impl SidebarState {
   /// Index of the cursor within [`visible_nodes`](Self::visible_nodes).
   pub fn selected(&self) -> usize {
     self.selected
+  }
+
+  /// The first database's name — the browse connection's identity, for the
+  /// header line. `None` on an empty catalog.
+  pub fn database_name(&self) -> Option<&str> {
+    self.catalog.databases.first().map(|db| db.name.as_str())
+  }
+
+  /// Total number of schemas across the catalog — the `[1] Schema (N)` pane
+  /// title count (gwm-style). Counts every schema even when the schema *row* is
+  /// hidden (`show_schemas == false`), since the catalog still models one.
+  pub fn schema_count(&self) -> usize {
+    self.catalog.databases.iter().map(|db| db.schemas.len()).sum()
   }
 
   /// Move the cursor down one visible node, clamped to the last.
@@ -174,6 +191,7 @@ impl SidebarState {
           label: db.name.clone(),
           expandable,
           expanded,
+          count: Some(db.schemas.iter().map(|s| s.relations.len()).sum()),
         },
       ));
       if !expanded {
@@ -191,6 +209,7 @@ impl SidebarState {
               label: schema.name.clone(),
               expandable: !schema.relations.is_empty(),
               expanded: s_expanded,
+              count: None,
             },
           ));
           if s_expanded {
@@ -220,6 +239,7 @@ impl SidebarState {
           label: rel.name.clone(),
           expandable: !rel.columns.is_empty(),
           expanded: r_expanded,
+          count: None,
         },
       ));
       if r_expanded {
@@ -232,6 +252,7 @@ impl SidebarState {
               label: col.name.clone(),
               expandable: false,
               expanded: false,
+              count: None,
             },
           ));
         }
