@@ -301,6 +301,9 @@ impl App {
         rows: Vec::new(),
         affected: None,
       });
+      // Drop the query that produced the now-cleared page so the query line
+      // doesn't show stale SQL over an empty grid.
+      self.displayed_query = None;
     }
   }
 
