@@ -260,6 +260,86 @@ fn browse_sidebar_draws_tree_guides() {
   );
 }
 
+/// A browse app (schemas shown) over `app.public` with a table `users` and a
+/// view `v_active`, expanded down to the relations.
+fn schema_view_app() -> App {
+  let catalog = Catalog {
+    databases: vec![Database {
+      name: "app".into(),
+      schemas: vec![Schema {
+        name: "public".into(),
+        relations: vec![
+          Relation {
+            name: "users".into(),
+            kind: RelationKind::Table,
+            columns: vec![],
+            foreign_keys: vec![],
+          },
+          Relation {
+            name: "v_active".into(),
+            kind: RelationKind::View,
+            columns: vec![],
+            foreign_keys: vec![],
+          },
+        ],
+      }],
+    }],
+  };
+  let mut app = App::browse(
+    catalog,
+    Capabilities {
+      explain: true,
+      schemas: true,
+      foreign_keys: true,
+    },
+    Backend::Postgres,
+  );
+  app.on_key(' '); // expand db -> schema `public`
+  app.on_key('j'); // onto the schema
+  app.on_key(' '); // expand schema -> users + v_active
+  app
+}
+
+#[test]
+fn browse_sidebar_colours_schemas_yellow_and_views_magenta() {
+  let app = schema_view_app();
+  let mut terminal = Terminal::new(TestBackend::new(90, 16)).unwrap();
+  terminal.draw(|f| view::render(f, &app)).unwrap();
+  let buf = terminal.backend().buffer();
+  let any_fg = |c: Color| (0..buf.area.height).any(|y| (0..buf.area.width).any(|x| buf[(x, y)].fg == c));
+  assert!(any_fg(Color::Yellow), "a schema node is coloured yellow");
+  assert!(any_fg(Color::Magenta), "a view node is coloured magenta");
+}
+
+#[test]
+fn browse_sidebar_puts_two_spaces_after_the_icon() {
+  let mut app = browse_app();
+  app.on_key(' '); // expand db -> `users` (a table -> f0ce icon) visible
+  let lines = render_lines(&app, 80, 12);
+  let row = lines.iter().find(|l| l.contains("users")).expect("users row");
+  let chars: Vec<char> = row.chars().collect();
+  let gi = chars
+    .iter()
+    .position(|&c| c == '\u{f0ce}')
+    .expect("table icon in the row");
+  assert_eq!(
+    (chars[gi + 1], chars[gi + 2]),
+    (' ', ' '),
+    "two spaces separate the icon from the label:\n{row}"
+  );
+}
+
+#[test]
+fn browse_sidebar_shows_a_node_counter() {
+  let mut app = browse_app();
+  app.on_key(' '); // expand db -> visible [main, users] = 2 nodes, cursor on main
+  let out = render_to_string(&app, 80, 12);
+  assert!(
+    out.contains("1 of 2"),
+    "the sidebar pane shows a `N of M` node counter:\n{out}"
+  );
+}
+
 #[test]
 fn browse_sidebar_has_no_expand_glyphs_and_a_left_cursor() {
   // No `▾`/`▸` expand markers; instead a left-pinned cursor `▶` that follows the
