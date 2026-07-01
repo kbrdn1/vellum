@@ -2,7 +2,7 @@
 //! navigation and quit *state*, never pixels (CLAUDE.md TUI test taxonomy).
 //! The pixel/render path is smoke-tested separately in `tui_view_tests.rs`.
 
-use vellum::model::{Column, QueryResult, TypeKind, Value};
+use vellum::model::{Backend, Column, QueryResult, TypeKind, Value};
 use vellum::tui::app::App;
 
 /// A `cols`×`rows` result grid; each cell holds its flattened `row*cols+col`
@@ -163,8 +163,64 @@ fn caps(schemas: bool) -> Capabilities {
 }
 
 #[test]
+fn context_label_is_the_database_then_the_open_relation() {
+  // The status-line breadcrumb: the database name until a relation is opened,
+  // then `schema.relation` (#86 review feedback — status shows the context).
+  let mut app = App::browse(catalog(), caps(false), Backend::Sqlite);
+  assert_eq!(app.context_label(), "app", "before opening: the database name");
+  app.on_key(' '); // expand the database (schema row hidden -> relations directly)
+  app.on_key('j'); // cursor onto `users`
+  app.on_key('\n'); // open it
+  assert_eq!(app.context_label(), "public.users", "after opening: schema.relation");
+}
+
+#[test]
+fn sidebar_database_node_counts_its_relations() {
+  // The db tree node renders `main (N)` gwm-style — N is its relation count.
+  let app = App::browse(catalog(), caps(false), Backend::Sqlite);
+  let nodes = app.sidebar().unwrap().visible_nodes();
+  assert_eq!(nodes[0].count, Some(2), "the `app` database holds users + orders");
+}
+
+#[test]
+fn schema_count_totals_the_catalog_schemas() {
+  // The `[1] Schema (N)` pane-title count.
+  let app = App::browse(catalog(), caps(false), Backend::Sqlite);
+  assert_eq!(app.sidebar().unwrap().schema_count(), 1, "one schema (public)");
+}
+
+#[test]
+fn page_loaded_label_counts_loaded_rows_without_a_count_query() {
+  // The `[2] <table> (N)` count: rows on the current page, `+` when a probe row
+  // says there is a next page. No `COUNT(*)` — the browse path never counts.
+  let mut app = App::browse(catalog(), caps(false), Backend::Sqlite);
+  app.on_key(' ');
+  app.on_key('j');
+  app.on_key('\n');
+  app.take_page_target();
+  app.apply_page(grid(1, 51)); // page_size(50) + probe row -> more pages
+  assert_eq!(
+    app.page_loaded_label().as_deref(),
+    Some("50+"),
+    "full page + probe -> more"
+  );
+
+  let mut short = App::browse(catalog(), caps(false), Backend::Sqlite);
+  short.on_key(' ');
+  short.on_key('j');
+  short.on_key('\n');
+  short.take_page_target();
+  short.apply_page(grid(1, 15)); // short final page
+  assert_eq!(
+    short.page_loaded_label().as_deref(),
+    Some("15"),
+    "short page: exact, no marker"
+  );
+}
+
+#[test]
 fn browse_starts_focused_on_the_sidebar() {
-  let app = App::browse(catalog(), caps(true));
+  let app = App::browse(catalog(), caps(true), Backend::Sqlite);
   assert_eq!(app.focus(), Focus::Sidebar);
   assert!(app.sidebar().is_some(), "browse mode has a sidebar");
   // Collapsed: only the database row is visible.
@@ -173,7 +229,7 @@ fn browse_starts_focused_on_the_sidebar() {
 
 #[test]
 fn tab_toggles_focus_between_sidebar_and_table() {
-  let mut app = App::browse(catalog(), caps(true));
+  let mut app = App::browse(catalog(), caps(true), Backend::Sqlite);
   app.on_key('\t');
   assert_eq!(app.focus(), Focus::Table);
   app.on_key('\t');
@@ -191,7 +247,7 @@ fn tab_does_nothing_in_one_shot_mode() {
 
 #[test]
 fn space_expands_then_collapses_a_database() {
-  let mut app = App::browse(catalog(), caps(true));
+  let mut app = App::browse(catalog(), caps(true), Backend::Sqlite);
   let nodes = |app: &App| app.sidebar().unwrap().visible_nodes().len();
   assert_eq!(nodes(&app), 1, "collapsed: just the database");
   app.on_key(' ');
@@ -204,7 +260,7 @@ fn space_expands_then_collapses_a_database() {
 fn enter_on_a_relation_emits_the_open_browse_intent() {
   // Schema level hidden (SQLite/MySQL): the database expands straight to its
   // relations, but the intent still carries the schema the browse query needs.
-  let mut app = App::browse(catalog(), caps(false));
+  let mut app = App::browse(catalog(), caps(false), Backend::Sqlite);
   app.on_key(' '); // expand the database → [app, users, orders]
   app.on_key('j'); // move onto `users`
   assert!(
@@ -227,7 +283,7 @@ fn enter_on_a_relation_emits_the_open_browse_intent() {
 fn without_schemas_the_schema_row_is_hidden() {
   // With `schemas: false` the database expands directly to relations — no
   // schema row — so two relations + the database = three visible nodes.
-  let mut app = App::browse(catalog(), caps(false));
+  let mut app = App::browse(catalog(), caps(false), Backend::Sqlite);
   app.on_key(' ');
   let labels: Vec<String> = app
     .sidebar()
@@ -241,7 +297,7 @@ fn without_schemas_the_schema_row_is_hidden() {
 
 #[test]
 fn with_schemas_the_schema_row_is_shown() {
-  let mut app = App::browse(catalog(), caps(true));
+  let mut app = App::browse(catalog(), caps(true), Backend::Sqlite);
   app.on_key(' '); // expand database → schema row appears
   app.on_key('j'); // onto `public`
   app.on_key(' '); // expand schema → relations appear
@@ -259,7 +315,7 @@ fn with_schemas_the_schema_row_is_shown() {
 fn expanding_a_relation_reveals_then_hides_its_columns() {
   // The deepest level: a relation flattens to its columns when expanded. Schema
   // row hidden so the path stays short: db → relation → columns.
-  let mut app = App::browse(catalog(), caps(false));
+  let mut app = App::browse(catalog(), caps(false), Backend::Sqlite);
   app.on_key(' '); // expand db → [app, users, orders]
   app.on_key('j'); // onto `users`
   app.on_key(' '); // expand `users` → its columns appear under it
@@ -290,7 +346,7 @@ fn expanding_a_relation_reveals_then_hides_its_columns() {
 
 #[test]
 fn sidebar_capital_g_jumps_last_and_g_jumps_first() {
-  let mut app = App::browse(catalog(), caps(false));
+  let mut app = App::browse(catalog(), caps(false), Backend::Sqlite);
   app.on_key(' '); // [app, users, orders]
   app.on_key('G');
   assert_eq!(app.sidebar().unwrap().selected(), 2, "G jumps to the last node");
@@ -302,7 +358,7 @@ fn sidebar_capital_g_jumps_last_and_g_jumps_first() {
 fn enter_on_a_database_toggles_it_without_intent() {
   // Enter on a non-relation node (the database) behaves like Space: it toggles
   // expansion and emits no browse intent.
-  let mut app = App::browse(catalog(), caps(false));
+  let mut app = App::browse(catalog(), caps(false), Backend::Sqlite);
   app.on_key('\n');
   assert_eq!(
     app.sidebar().unwrap().visible_nodes().len(),
@@ -335,7 +391,7 @@ fn a_view_relation_maps_to_the_view_kind() {
       }],
     }],
   };
-  let mut app = App::browse(cat, caps(false));
+  let mut app = App::browse(cat, caps(false), Backend::Sqlite);
   app.on_key(' '); // expand db → the view row appears
   let view = &app.sidebar().unwrap().visible_nodes()[1];
   assert_eq!(view.label, "active_users");
@@ -344,7 +400,7 @@ fn a_view_relation_maps_to_the_view_kind() {
 
 #[test]
 fn sidebar_cursor_clamps_at_both_ends() {
-  let mut app = App::browse(catalog(), caps(false));
+  let mut app = App::browse(catalog(), caps(false), Backend::Sqlite);
   app.on_key(' '); // [app, users, orders]
   for _ in 0..5 {
     app.on_key('j');
@@ -368,7 +424,7 @@ fn sidebar_cursor_clamps_at_both_ends() {
 
 #[test]
 fn browse_shows_a_row_counter_once_a_page_loads() {
-  let mut app = App::browse(catalog(), caps(false));
+  let mut app = App::browse(catalog(), caps(false), Backend::Sqlite);
   assert_eq!(app.page_counter().as_deref(), Some("no rows"), "nothing fetched yet");
   app.apply_page(grid(2, 51)); // a full page plus the probe row
   assert_eq!(app.page_counter().as_deref(), Some("rows 1-50"));
@@ -377,7 +433,7 @@ fn browse_shows_a_row_counter_once_a_page_loads() {
 
 #[test]
 fn n_requests_the_next_page_and_the_counter_advances() {
-  let mut app = App::browse(catalog(), caps(false));
+  let mut app = App::browse(catalog(), caps(false), Backend::Sqlite);
   app.apply_page(grid(2, 51)); // page 0, has a next
   app.on_key('\t'); // focus the table pane — pagination lives there
   app.on_key('n');
@@ -389,7 +445,7 @@ fn n_requests_the_next_page_and_the_counter_advances() {
 
 #[test]
 fn n_is_inert_on_the_last_page() {
-  let mut app = App::browse(catalog(), caps(false));
+  let mut app = App::browse(catalog(), caps(false), Backend::Sqlite);
   app.apply_page(grid(2, 30)); // partial page, no probe -> no next page
   app.on_key('\t');
   app.on_key('n');
@@ -403,7 +459,7 @@ fn n_is_inert_on_the_last_page() {
 
 #[test]
 fn p_requests_the_previous_page() {
-  let mut app = App::browse(catalog(), caps(false));
+  let mut app = App::browse(catalog(), caps(false), Backend::Sqlite);
   app.apply_page(grid(2, 51));
   app.on_key('\t');
   app.on_key('n'); // -> page 1 requested
@@ -416,7 +472,7 @@ fn p_requests_the_previous_page() {
 #[test]
 fn n_and_p_do_nothing_until_the_table_is_focused() {
   // Browse opens focused on the sidebar; `n`/`p` there must not page.
-  let mut app = App::browse(catalog(), caps(false));
+  let mut app = App::browse(catalog(), caps(false), Backend::Sqlite);
   app.apply_page(grid(2, 51));
   assert_eq!(app.focus(), Focus::Sidebar);
   app.on_key('n');
@@ -426,7 +482,7 @@ fn n_and_p_do_nothing_until_the_table_is_focused() {
 
 #[test]
 fn opening_another_relation_restarts_pagination() {
-  let mut app = App::browse(catalog(), caps(false));
+  let mut app = App::browse(catalog(), caps(false), Backend::Sqlite);
   app.on_key(' '); // [app, users, orders], cursor on the database
   app.on_key('j'); // onto `users`
   app.on_key('\n'); // open `users`
@@ -459,7 +515,7 @@ fn opening_another_relation_restarts_pagination() {
 
 #[test]
 fn opening_a_relation_drops_a_pending_page_request() {
-  let mut app = App::browse(catalog(), caps(false));
+  let mut app = App::browse(catalog(), caps(false), Backend::Sqlite);
   app.on_key(' ');
   app.on_key('j'); // users
   app.on_key('\n');
@@ -542,7 +598,7 @@ fn tab_toggles_focus_between_editor_and_table() {
 fn one_shot_and_browse_have_no_editor() {
   assert!(App::new(grid(1, 1)).editor().is_none(), "one-shot has no editor");
   assert!(
-    App::browse(catalog(), caps(true)).editor().is_none(),
+    App::browse(catalog(), caps(true), Backend::Sqlite).editor().is_none(),
     "browse has no editor"
   );
   // Submitting where there is no editor is a harmless no-op.
@@ -555,7 +611,7 @@ fn one_shot_and_browse_have_no_editor() {
 
 /// A browse app with `users` already loaded onto the table, focused on it.
 fn browse_with_loaded_table() -> App {
-  let mut app = App::browse(catalog(), caps(false));
+  let mut app = App::browse(catalog(), caps(false), Backend::Sqlite);
   app.on_key(' '); // expand db
   app.on_key('j'); // onto `users`
   app.on_key('\n'); // open it
@@ -592,7 +648,7 @@ fn s_cycles_ascending_descending_off() {
 
 #[test]
 fn sorting_restarts_pagination_from_page_zero() {
-  let mut app = App::browse(catalog(), caps(false));
+  let mut app = App::browse(catalog(), caps(false), Backend::Sqlite);
   app.on_key(' ');
   app.on_key('j');
   app.on_key('\n');
@@ -652,13 +708,13 @@ fn opening_a_relation_drops_a_pending_requery() {
 
 #[test]
 fn nothing_to_fetch_before_a_relation_is_open() {
-  let mut app = App::browse(catalog(), caps(false));
+  let mut app = App::browse(catalog(), caps(false), Backend::Sqlite);
   assert!(app.take_page_target().is_none(), "no relation open -> nothing to fetch");
 }
 
 #[test]
 fn opening_a_relation_targets_page_zero_unsorted() {
-  let mut app = App::browse(catalog(), caps(false));
+  let mut app = App::browse(catalog(), caps(false), Backend::Sqlite);
   app.on_key(' ');
   app.on_key('j');
   app.on_key('\n'); // open `users`
@@ -672,7 +728,7 @@ fn opening_a_relation_targets_page_zero_unsorted() {
 
 #[test]
 fn the_target_follows_paging_then_sorting() {
-  let mut app = App::browse(catalog(), caps(false));
+  let mut app = App::browse(catalog(), caps(false), Backend::Sqlite);
   app.on_key(' ');
   app.on_key('j');
   app.on_key('\n'); // open `users`

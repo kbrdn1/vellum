@@ -13,7 +13,7 @@
 
 use crate::driver::Capabilities;
 use crate::model::catalog::Catalog;
-use crate::model::QueryResult;
+use crate::model::{Backend, QueryResult};
 use crate::tui::state::editor::EditorState;
 use crate::tui::state::paginate::{PageRequest, Paginator, DEFAULT_PAGE_SIZE};
 use crate::tui::state::sidebar::{RelationRef, SidebarState};
@@ -46,6 +46,9 @@ pub struct App {
   requery: bool,
   current_relation: Option<RelationRef>,
   displayed_query: Option<String>,
+  /// The engine this browse session talks to (`None` in one-shot / query mode) —
+  /// the `[sqlite]`-style header badge.
+  backend: Option<Backend>,
   quit: bool,
 }
 
@@ -79,6 +82,7 @@ impl App {
       requery: false,
       current_relation: None,
       displayed_query: None,
+      backend: None,
       quit: false,
     }
   }
@@ -86,7 +90,7 @@ impl App {
   /// Browse mode: a schema sidebar over `catalog`, plus an empty result table
   /// that selecting a relation fills (#15). Focus starts on the sidebar.
   /// `capabilities.schemas` collapses the schema level for engines without one.
-  pub fn browse(catalog: Catalog, capabilities: Capabilities) -> Self {
+  pub fn browse(catalog: Catalog, capabilities: Capabilities, backend: Backend) -> Self {
     let empty = QueryResult {
       columns: Vec::new(),
       rows: Vec::new(),
@@ -105,6 +109,7 @@ impl App {
       requery: false,
       current_relation: None,
       displayed_query: None,
+      backend: Some(backend),
       quit: false,
     }
   }
@@ -131,6 +136,7 @@ impl App {
       requery: false,
       current_relation: None,
       displayed_query: None,
+      backend: None,
       quit: false,
     }
   }
@@ -153,6 +159,25 @@ impl App {
   /// The browse connection's database name (from the catalog), for the header.
   pub fn database_name(&self) -> Option<&str> {
     self.sidebar.as_ref().and_then(SidebarState::database_name)
+  }
+
+  /// The engine this browse session talks to — the header badge.
+  pub fn backend(&self) -> Option<Backend> {
+    self.backend
+  }
+
+  /// The status-line context breadcrumb: `schema.relation` once a relation is
+  /// open, else the database name (nothing selected yet). Empty in one-shot mode.
+  pub fn context_label(&self) -> String {
+    String::new()
+  }
+
+  /// The `[2] <table> (N)` count for the open relation's pane title: the number
+  /// of rows loaded on the current page, with a `+` when a next page exists
+  /// (no `COUNT(*)` — the browse path never counts). `None` when no page is
+  /// loaded or outside browse mode.
+  pub fn page_loaded_label(&self) -> Option<String> {
+    None
   }
 
   /// The SQL that produced the currently-displayed page, for the query line.

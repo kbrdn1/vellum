@@ -6,7 +6,7 @@
 use ratatui::backend::TestBackend;
 use ratatui::Terminal;
 
-use vellum::model::{Column, QueryResult, TypeKind, Value};
+use vellum::model::{Backend, Column, QueryResult, TypeKind, Value};
 use vellum::tui::app::App;
 use vellum::tui::view;
 
@@ -110,6 +110,7 @@ fn browse_app() -> App {
       schemas: false,
       foreign_keys: true,
     },
+    Backend::Sqlite,
   )
 }
 
