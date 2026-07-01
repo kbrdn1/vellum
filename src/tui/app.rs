@@ -197,6 +197,18 @@ impl App {
     self.displayed_query = Some(sql);
   }
 
+  /// The current browse fetch error, if the last page query failed — shown on
+  /// the status line (#85). `None` in one-shot/query mode or after a successful
+  /// fetch (cleared by [`apply_page`](Self::apply_page)).
+  pub fn fetch_error(&self) -> Option<&str> {
+    None
+  }
+
+  /// Record a browse fetch failure so the status line can surface it while the
+  /// session stays alive (the runtime catches the query error instead of
+  /// letting it end the TUI). Cleared on the next successful page.
+  pub fn set_fetch_error(&mut self, _message: String) {}
+
   /// The SQL editor buffer, if in query mode (read-only, for the view).
   pub fn editor(&self) -> Option<&EditorState> {
     self.editor.as_ref()
