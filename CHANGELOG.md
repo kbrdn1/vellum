@@ -24,7 +24,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   page query on its own line above the grid. The sidebar is a fixed, narrower
   width. The line/counter builders (`header_line`, `status_line`, `row_counter`,
   `sort_indicator`) are pure — `Line`/`String`, no backend — and unit-tested
-  directly, mirroring gwm's `header_line` / `pane_counter`.
+  directly, mirroring gwm's `header_line` / `pane_counter`. The browse-only
+  chrome (relation title, sort indicator, `N of N` counter) is gated so the
+  one-shot `-q` view keeps its plain `vellum` title; the status line reserves the
+  range's width before shrinking the hints so `rows X-Y` stays pinned at medium
+  widths; and the header pads/truncates by terminal **display width** (not `char`
+  count), so a CJK/emoji database name can't overflow the line and shove the
+  version chip off-screen (#88).
 - **Phase 1 — browse runtime, the UI goes live (#83):** the browse pure-state
   (#14 sidebar, #15 pagination, #19 sort) is now **reachable and rendered**.
   `vellum --db <FILE>` (no SQL) connects SQLite, introspects the schema, and

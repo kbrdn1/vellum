@@ -11,6 +11,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Cell, List, ListItem, ListState, Paragraph, Row, Table, TableState};
 use ratatui::Frame;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::tui::app::{App, Focus};
 use crate::tui::state::sort::{Sort, SortDir};
@@ -175,7 +176,7 @@ pub fn header_line(database: &str, width: usize) -> Line<'static> {
     return Line::default();
   }
   let version = format!(" vellum {} ", env!("CARGO_PKG_VERSION"));
-  let version_w = version.chars().count();
+  let version_w = version.width();
   let version_style = Style::new().add_modifier(Modifier::REVERSED);
   if width <= version_w {
     return Line::from(Span::styled(truncate(&version, width), version_style));
@@ -184,7 +185,7 @@ pub fn header_line(database: &str, width: usize) -> Line<'static> {
   let mut used = 0usize;
   if !database.is_empty() {
     let badge = truncate(&format!(" {database} "), width - version_w);
-    used = badge.chars().count();
+    used = badge.width();
     spans.push(Span::styled(badge, Style::new().add_modifier(Modifier::BOLD)));
   }
   spans.push(Span::raw(" ".repeat(width.saturating_sub(used + version_w))));
@@ -204,13 +205,13 @@ pub fn status_line(range: &str, width: usize) -> Line<'static> {
   } else {
     format!(" {range} ")
   };
-  let range_w = range_text.chars().count();
+  let range_w = range_text.width();
   // Reserve the range's width first so it stays pinned to the right even when
   // the hints must shrink to make room; drop it only when it can't fit at all.
   let fits = range_w > 0 && range_w <= width;
   let hints_budget = if fits { width - range_w } else { width };
   let hints = truncate(HINTS, hints_budget);
-  let hints_w = hints.chars().count();
+  let hints_w = hints.width();
   let mut spans = vec![Span::styled(hints, Style::new().add_modifier(Modifier::DIM))];
   if fits {
     spans.push(Span::raw(" ".repeat(width - hints_w - range_w)));
@@ -240,17 +241,31 @@ pub fn sort_indicator(sort: Option<&Sort>) -> Option<String> {
   }
 }
 
-/// Clamp `s` to `max` characters, appending `…` when it overflows.
+/// Clamp `s` to `max` terminal cells, appending `…` when it overflows. Width is
+/// measured in display columns (a CJK/emoji char is 2), not `char` count, so the
+/// result never exceeds `max` cells even on wide input.
 fn truncate(s: &str, max: usize) -> String {
-  if s.chars().count() <= max {
-    s.to_string()
-  } else if max == 0 {
-    String::new()
-  } else {
-    let mut out: String = s.chars().take(max - 1).collect();
-    out.push('…');
-    out
+  if s.width() <= max {
+    return s.to_string();
   }
+  if max == 0 {
+    return String::new();
+  }
+  // Reserve one cell for the ellipsis, then take whole chars until the next one
+  // would spill past the budget (a 2-cell char can't half-fit).
+  let budget = max - 1;
+  let mut out = String::new();
+  let mut w = 0usize;
+  for ch in s.chars() {
+    let cw = UnicodeWidthChar::width(ch).unwrap_or(0);
+    if w + cw > budget {
+      break;
+    }
+    out.push(ch);
+    w += cw;
+  }
+  out.push('…');
+  out
 }
 
 /// Bold border when a pane has focus, plain otherwise.

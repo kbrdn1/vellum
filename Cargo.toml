@@ -94,6 +94,11 @@ sqlparser = { version = "0.62", default-features = false, features = ["std"] }
 # render through ratatui (crossterm is its default backend). ratatui 0.30 sets
 # the crate's 1.88 MSRV (see `rust-version` above).
 ratatui = "0.30"
+# Terminal display width of a string. The header/status builders pad and
+# truncate the chrome by cell width, not `char` count, so a CJK/emoji database
+# name (2 cells per char) can't overflow the line and shove the version chip
+# off-screen (#88). Already in the tree via ratatui — pinned as a direct dep.
+unicode-width = "0.2"
 
 [features]
 # Opt-in gate for integration tests that need a real database *server*
