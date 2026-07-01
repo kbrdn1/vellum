@@ -278,38 +278,108 @@ pub fn header_line(label: &str, width: usize) -> Line<'static> {
   Line::from(spans)
 }
 
-/// gwm-style: the coloured context breadcrumb pinned to the left, the key hints
-/// immediately after it (dim), then blank padding to `width`. The right edge is
-/// left free for the log / status message (#85) — the hints are *not* pinned
-/// right. The context is reserved first so it survives when the hints must
-/// shrink; it is dropped only when even it can't fit.
-pub fn status_line(context: &str, _message: Option<&str>, width: usize) -> Line<'static> {
-  const HINTS: &str = " Tab focus · Enter open · n/p page · s sort · q quit ";
+/// gwm-style status line, laid out left-to-right:
+///
+/// ```text
+///  main.users  Tab focus  Enter open  …            [orders: no such table]
+/// ```
+///
+/// The coloured context breadcrumb is pinned left, then keyed hints (bold key +
+/// muted label, two spaces between groups), then the optional log `message`
+/// (#85) bracketed and pinned right in red. Priority when the row is tight, most
+/// to least protected: the log (clipped alone if it alone overflows), the
+/// context chip, then the hints (truncated with `…`). No message means no chip
+/// at all — never an empty `[]`.
+pub fn status_line(context: &str, message: Option<&str>, width: usize) -> Line<'static> {
+  const HINTS: &[(&str, &str)] = &[
+    ("Tab", "focus"),
+    ("Enter", "open"),
+    ("n/p", "page"),
+    ("s", "sort"),
+    ("q", "quit"),
+  ];
   if width == 0 {
     return Line::default();
   }
-  let context_text = if context.is_empty() {
+
+  let context_style = Style::new()
+    .bg(Color::Cyan)
+    .fg(Color::Black)
+    .add_modifier(Modifier::BOLD);
+  let key_style = Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD);
+  let label_style = Style::new().add_modifier(Modifier::DIM);
+  let log_style = Style::new().fg(Color::Red);
+
+  // The log rides the right, bracketed. Collapse control chars so an error
+  // carrying a newline/tab can't split this single row.
+  let log_text = message.map(|m| {
+    let clean: String = m.chars().map(|c| if c.is_control() { ' ' } else { c }).collect();
+    format!("[{clean}]")
+  });
+  let log_w = log_text.as_ref().map(|s| s.width()).unwrap_or(0);
+
+  // Priority floor: if even the log cannot fit, clip it alone — never drop the
+  // error to keep a hint.
+  if let Some(log) = &log_text {
+    if width <= log_w {
+      return Line::from(Span::styled(truncate(log, width), log_style));
+    }
+  }
+
+  let avail = width - log_w; // columns to the left of the right-pinned log
+  let mut spans: Vec<Span<'static>> = Vec::new();
+  let mut used = 0usize;
+
+  // Context chip — load-bearing, kept whenever it fits at all.
+  let ctx_chip = if context.is_empty() {
     String::new()
   } else {
     format!(" {context} ")
   };
-  let context_w = context_text.width();
-  let fits = context_w > 0 && context_w <= width;
-  let shown_context_w = if fits { context_w } else { 0 };
-  let hints = truncate(HINTS, width - shown_context_w);
-  let hints_w = hints.width();
-  let mut spans = Vec::new();
-  if fits {
-    spans.push(Span::styled(
-      context_text,
-      Style::new()
-        .bg(Color::Cyan)
-        .fg(Color::Black)
-        .add_modifier(Modifier::BOLD),
-    ));
+  let ctx_w = ctx_chip.width();
+  if ctx_w > 0 && ctx_w <= avail {
+    spans.push(Span::styled(ctx_chip, context_style));
+    used += ctx_w;
   }
-  spans.push(Span::styled(hints, Style::new().add_modifier(Modifier::DIM)));
-  spans.push(Span::raw(" ".repeat(width - shown_context_w - hints_w)));
+
+  // Keyed hints fill whatever is left, minus one column for the `…` marker.
+  let hint_budget = avail.saturating_sub(used).saturating_sub(1);
+  let mut truncated = false;
+  let mut hint_used = 0usize;
+  for (i, (key, label)) in HINTS.iter().enumerate() {
+    // Two spaces between hint groups; a single space after the context chip
+    // before the first hint.
+    let sep = if i > 0 { 2 } else { usize::from(used > 0) };
+    let badge_w = key.width() + 1 + label.width();
+    if hint_used + sep + badge_w > hint_budget {
+      truncated = true;
+      break;
+    }
+    if sep > 0 {
+      spans.push(Span::raw(" ".repeat(sep)));
+      hint_used += sep;
+    }
+    spans.push(Span::styled((*key).to_string(), key_style));
+    spans.push(Span::styled(format!(" {label}"), label_style));
+    hint_used += badge_w;
+  }
+  used += hint_used;
+  if truncated {
+    if used > 0 {
+      spans.push(Span::raw(" "));
+      used += 1;
+    }
+    spans.push(Span::styled("…", label_style));
+    used += 1;
+  }
+
+  let pad = width.saturating_sub(used + log_w);
+  if pad > 0 {
+    spans.push(Span::raw(" ".repeat(pad)));
+  }
+  if let Some(log) = log_text {
+    spans.push(Span::styled(log, log_style));
+  }
   Line::from(spans)
 }
 
