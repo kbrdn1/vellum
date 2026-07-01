@@ -21,7 +21,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   lines (`├─` / `└─` with `│` carried down from ancestors). There are no
   `▾` / `▸` expand glyphs — a left-pinned `▶` cursor follows the highlighted row
   instead (ratatui reserves the symbol gutter on every row, so the guides stay
-  aligned). Requires a nerd font — the same assumption gwm makes.
+  aligned). Schema nodes are coloured yellow and view nodes magenta so they read
+  distinctly from tables; the icon sits two spaces off the label; and the schema
+  pane carries a `N of M` node counter bottom-right, mirroring the table pane.
+  Requires a nerd font — the same assumption gwm makes.
 - **Phase 1 — browse UI polish, gwm-style (#86):** the browse render moves to a
   `header / body / status` stack. A header line badges the database and pins a
   `vellum <version>` chip; the status line carries the key hints with the page

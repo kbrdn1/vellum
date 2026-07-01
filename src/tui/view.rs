@@ -76,19 +76,27 @@ fn render_sidebar(frame: &mut Frame, app: &App, area: Rect) {
       let icon = sidebar_icon(node.kind);
       let count = node.count.map(|c| format!(" ({c})")).unwrap_or_default();
       last_at_depth.push(node.is_last);
-      ListItem::new(format!("{prefix}{branch} {icon} {}{count}", node.label))
+      // Connectors stay default; the icon + label (two spaces apart) carry the
+      // per-kind colour so schemas / views read distinctly.
+      ListItem::new(Line::from(vec![
+        Span::raw(format!("{prefix}{branch} ")),
+        Span::styled(format!("{icon}  {}{count}", node.label), sidebar_style(node.kind)),
+      ]))
     })
     .collect();
   let title = format!(" [1] Schema ({}) ", sidebar.schema_count());
   // A left-pinned cursor follows the selection; ratatui reserves the symbol
   // gutter on every row, so the tree guides stay aligned. No `▾`/`▸` expand
-  // glyphs — the reversed row + cursor mark the selection instead.
+  // glyphs — the reversed row + cursor mark the selection instead. A `N of M`
+  // node counter sits bottom-right, mirroring the table pane.
+  let mut block = Block::bordered()
+    .title(title)
+    .border_style(focus_style(app.focus() == Focus::Sidebar));
+  if let Some(counter) = row_counter(sidebar.selected() + 1, nodes.len()) {
+    block = block.title_bottom(Line::from(counter).right_aligned());
+  }
   let list = List::new(items)
-    .block(
-      Block::bordered()
-        .title(title)
-        .border_style(focus_style(app.focus() == Focus::Sidebar)),
-    )
+    .block(block)
     .highlight_style(Style::new().add_modifier(Modifier::REVERSED))
     .highlight_symbol("▶ ");
   let mut state = ListState::default();
@@ -108,6 +116,17 @@ fn sidebar_icon(kind: SidebarKind) -> &'static str {
     SidebarKind::Table => "\u{f0ce}",    // nf-fa-table
     SidebarKind::View => "\u{f06e}",     // nf-fa-eye
     SidebarKind::Column => "\u{f0db}",   // nf-fa-columns
+  }
+}
+
+/// A per-kind colour for the icon + label, so schemas and views read distinctly
+/// from tables at a glance. Tables / databases / columns keep the default
+/// foreground (`fg == None`).
+fn sidebar_style(kind: SidebarKind) -> Style {
+  match kind {
+    SidebarKind::Schema => Style::new().fg(Color::Yellow),
+    SidebarKind::View => Style::new().fg(Color::Magenta),
+    _ => Style::new(),
   }
 }
 
