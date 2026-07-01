@@ -49,6 +49,10 @@ pub struct App {
   /// The engine this browse session talks to (`None` in one-shot / query mode) —
   /// the `[sqlite]`-style header badge.
   backend: Option<Backend>,
+  /// The last browse fetch error, surfaced on the status line (#85). Set when a
+  /// page query fails; cleared by [`apply_page`](App::apply_page) on the next
+  /// successful fetch. `None` at rest and outside browse mode.
+  fetch_error: Option<String>,
   quit: bool,
 }
 
@@ -83,6 +87,7 @@ impl App {
       current_relation: None,
       displayed_query: None,
       backend: None,
+      fetch_error: None,
       quit: false,
     }
   }
@@ -110,6 +115,7 @@ impl App {
       current_relation: None,
       displayed_query: None,
       backend: Some(backend),
+      fetch_error: None,
       quit: false,
     }
   }
@@ -137,6 +143,7 @@ impl App {
       current_relation: None,
       displayed_query: None,
       backend: None,
+      fetch_error: None,
       quit: false,
     }
   }
@@ -201,13 +208,15 @@ impl App {
   /// the status line (#85). `None` in one-shot/query mode or after a successful
   /// fetch (cleared by [`apply_page`](Self::apply_page)).
   pub fn fetch_error(&self) -> Option<&str> {
-    None
+    self.fetch_error.as_deref()
   }
 
   /// Record a browse fetch failure so the status line can surface it while the
   /// session stays alive (the runtime catches the query error instead of
   /// letting it end the TUI). Cleared on the next successful page.
-  pub fn set_fetch_error(&mut self, _message: String) {}
+  pub fn set_fetch_error(&mut self, message: String) {
+    self.fetch_error = Some(message);
+  }
 
   /// The SQL editor buffer, if in query mode (read-only, for the view).
   pub fn editor(&self) -> Option<&EditorState> {
