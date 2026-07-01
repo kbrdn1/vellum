@@ -188,6 +188,34 @@ fn header_line_zero_width_is_empty() {
 }
 
 #[test]
+fn header_line_pads_wide_characters_by_display_width() {
+  // A CJK database name is 2 terminal cells per char. Padding must be measured
+  // in display width, not char count, or the line overflows `width` and shoves
+  // the pinned version chip off-screen (#88).
+  let line = header_line("数据库", 40);
+  assert!(
+    flat(&line).contains("vellum"),
+    "version chip preserved: {:?}",
+    flat(&line)
+  );
+  assert_eq!(line.width(), 40, "padded to the exact display width, not char count");
+}
+
+#[test]
+fn header_line_truncates_a_wide_database_by_display_width() {
+  // A database name far wider than the budget must truncate by display width so
+  // the badge + chip still fit exactly, never overflowing (#88).
+  let long = "数据库".repeat(20); // 60 CJK chars = 120 cells
+  let line = header_line(&long, 30);
+  assert!(
+    flat(&line).contains("vellum"),
+    "version chip survives truncation: {:?}",
+    flat(&line)
+  );
+  assert_eq!(line.width(), 30, "truncated + padded to the exact display width");
+}
+
+#[test]
 fn row_counter_is_one_based_and_hidden_when_empty() {
   assert_eq!(row_counter(3, 50).as_deref(), Some(" 3 of 50 "));
   assert_eq!(row_counter(1, 0), None, "an empty page shows no counter");
