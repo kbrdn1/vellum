@@ -28,7 +28,7 @@ const SIDEBAR_WIDTH: u16 = 28;
 pub fn render(frame: &mut Frame, app: &App) {
   match app.sidebar() {
     Some(_) => render_browse(frame, app),
-    None => render_table(frame, app, frame.area()),
+    None => render_table(frame, app, frame.area(), false),
   }
 }
 
@@ -61,7 +61,7 @@ fn render_result(frame: &mut Frame, app: &App, area: Rect) {
     ))),
     parts[0],
   );
-  render_table(frame, app, parts[1]);
+  render_table(frame, app, parts[1], true);
 }
 
 /// The schema tree: each visible node indented by its depth, expandable nodes
@@ -99,10 +99,12 @@ fn render_sidebar(frame: &mut Frame, app: &App, area: Rect) {
   frame.render_stateful_widget(list, area, &mut state);
 }
 
-/// The result grid into `area`. The block is titled with the open relation's
-/// name; a non-ascending sort shows top-right and a `N of N` cursor counter
-/// bottom-right. Columns are widthed to their widest visible cell (clamped).
-fn render_table(frame: &mut Frame, app: &App, area: Rect) {
+/// The result grid into `area`. In `browse` the block is titled with the open
+/// relation's name, a non-ascending sort shows top-right and a `N of N` cursor
+/// counter bottom-right; the one-shot view (`browse == false`) keeps the plain
+/// `vellum` title with none of that chrome. Columns are widthed to their widest
+/// visible cell (clamped).
+fn render_table(frame: &mut Frame, app: &App, area: Rect, browse: bool) {
   let state = app.table();
   let offset = state.col_offset();
   let col_count = state.columns().len();
@@ -127,18 +129,21 @@ fn render_table(frame: &mut Frame, app: &App, area: Rect) {
     })
     .collect();
 
-  let title = app
-    .current_relation()
-    .map(|r| r.relation.clone())
-    .unwrap_or_else(|| "results".to_string());
-  let mut block = Block::bordered()
-    .title(title)
-    .border_style(focus_style(app.focus() == Focus::Table));
-  if let Some(indicator) = sort_indicator(app.sort()) {
-    block = block.title_top(Line::from(indicator).right_aligned());
-  }
-  if let Some(counter) = row_counter(state.selected() + 1, state.rows().len()) {
-    block = block.title_bottom(Line::from(counter).right_aligned());
+  let mut block = Block::bordered().border_style(focus_style(app.focus() == Focus::Table));
+  if browse {
+    let title = app
+      .current_relation()
+      .map(|r| r.relation.clone())
+      .unwrap_or_else(|| "results".to_string());
+    block = block.title(title);
+    if let Some(indicator) = sort_indicator(app.sort()) {
+      block = block.title_top(Line::from(indicator).right_aligned());
+    }
+    if let Some(counter) = row_counter(state.selected() + 1, state.rows().len()) {
+      block = block.title_bottom(Line::from(counter).right_aligned());
+    }
+  } else {
+    block = block.title("vellum");
   }
 
   let table = Table::new(rows, widths)
@@ -194,16 +199,20 @@ pub fn status_line(range: &str, width: usize) -> Line<'static> {
   if width == 0 {
     return Line::default();
   }
-  let hints = truncate(HINTS, width);
-  let hints_w = hints.chars().count();
   let range_text = if range.is_empty() {
     String::new()
   } else {
     format!(" {range} ")
   };
   let range_w = range_text.chars().count();
+  // Reserve the range's width first so it stays pinned to the right even when
+  // the hints must shrink to make room; drop it only when it can't fit at all.
+  let fits = range_w > 0 && range_w <= width;
+  let hints_budget = if fits { width - range_w } else { width };
+  let hints = truncate(HINTS, hints_budget);
+  let hints_w = hints.chars().count();
   let mut spans = vec![Span::styled(hints, Style::new().add_modifier(Modifier::DIM))];
-  if range_w > 0 && hints_w + range_w <= width {
+  if fits {
     spans.push(Span::raw(" ".repeat(width - hints_w - range_w)));
     spans.push(Span::styled(range_text, Style::new().add_modifier(Modifier::BOLD)));
   }
