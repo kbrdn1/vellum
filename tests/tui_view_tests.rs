@@ -202,6 +202,60 @@ fn browse_sidebar_uses_nerd_font_icons_per_node_kind() {
 }
 
 #[test]
+fn browse_sidebar_icons_cover_every_node_kind() {
+  // Pin ALL five glyph arms, not just db/table (#90 review): a catalog with
+  // schemas shown, a table AND a view, and an expanded table's columns — so the
+  // schema / view / column arms render and a wrong glyph there would fail here.
+  let catalog = Catalog {
+    databases: vec![Database {
+      name: "app".into(),
+      schemas: vec![Schema {
+        name: "public".into(),
+        relations: vec![
+          Relation {
+            name: "users".into(),
+            kind: RelationKind::Table,
+            columns: vec![CatColumn {
+              name: "id".into(),
+              data_type: "int".into(),
+              nullable: false,
+              primary_key: true,
+            }],
+            foreign_keys: vec![],
+          },
+          Relation {
+            name: "v_users".into(),
+            kind: RelationKind::View,
+            columns: vec![],
+            foreign_keys: vec![],
+          },
+        ],
+      }],
+    }],
+  };
+  let mut app = App::browse(
+    catalog,
+    Capabilities {
+      explain: true,
+      schemas: true,
+      foreign_keys: true,
+    },
+    Backend::Postgres,
+  );
+  app.on_key(' '); // expand db -> reveals the `public` schema
+  app.on_key('j'); // onto the schema
+  app.on_key(' '); // expand schema -> reveals users + v_users
+  app.on_key('j'); // onto users
+  app.on_key(' '); // expand users -> reveals its column `id`
+  let out = render_to_string(&app, 90, 16);
+  assert!(out.contains('\u{f1c0}'), "database glyph:\n{out}");
+  assert!(out.contains('\u{f07c}'), "schema (folder) glyph:\n{out}");
+  assert!(out.contains('\u{f0ce}'), "table glyph:\n{out}");
+  assert!(out.contains('\u{f06e}'), "view (eye) glyph:\n{out}");
+  assert!(out.contains('\u{f0db}'), "column glyph:\n{out}");
+}
+
+#[test]
 fn browse_table_pane_is_numbered_with_the_relation_and_loaded_count() {
   let out = render_to_string(&opened_browse_app(), 80, 14);
   assert!(
