@@ -87,6 +87,12 @@ impl SidebarState {
     self.selected
   }
 
+  /// The first database's name — the browse connection's identity, for the
+  /// header line. `None` on an empty catalog.
+  pub fn database_name(&self) -> Option<&str> {
+    self.catalog.databases.first().map(|db| db.name.as_str())
+  }
+
   /// Move the cursor down one visible node, clamped to the last.
   pub fn select_next(&mut self) {
     let last = self.visible().len().saturating_sub(1);

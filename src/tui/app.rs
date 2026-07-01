@@ -45,6 +45,7 @@ pub struct App {
   sort: Option<Sort>,
   requery: bool,
   current_relation: Option<RelationRef>,
+  displayed_query: Option<String>,
   quit: bool,
 }
 
@@ -77,6 +78,7 @@ impl App {
       sort: None,
       requery: false,
       current_relation: None,
+      displayed_query: None,
       quit: false,
     }
   }
@@ -102,6 +104,7 @@ impl App {
       sort: None,
       requery: false,
       current_relation: None,
+      displayed_query: None,
       quit: false,
     }
   }
@@ -127,6 +130,7 @@ impl App {
       sort: None,
       requery: false,
       current_relation: None,
+      displayed_query: None,
       quit: false,
     }
   }
@@ -139,6 +143,27 @@ impl App {
   /// The schema sidebar state, if in browse mode (read-only, for the view).
   pub fn sidebar(&self) -> Option<&SidebarState> {
     self.sidebar.as_ref()
+  }
+
+  /// The relation currently being browsed, if one is open — the table title.
+  pub fn current_relation(&self) -> Option<&RelationRef> {
+    self.current_relation.as_ref()
+  }
+
+  /// The browse connection's database name (from the catalog), for the header.
+  pub fn database_name(&self) -> Option<&str> {
+    self.sidebar.as_ref().and_then(SidebarState::database_name)
+  }
+
+  /// The SQL that produced the currently-displayed page, for the query line.
+  /// Set by the runtime after each successful fetch.
+  pub fn displayed_query(&self) -> Option<&str> {
+    self.displayed_query.as_deref()
+  }
+
+  /// Record the SQL the runtime just ran for the displayed page.
+  pub fn set_displayed_query(&mut self, sql: String) {
+    self.displayed_query = Some(sql);
   }
 
   /// The SQL editor buffer, if in query mode (read-only, for the view).
@@ -222,6 +247,7 @@ impl App {
     self.page_request = None;
     self.sort = None;
     self.requery = false;
+    self.displayed_query = None;
   }
 
   /// Drain any pending browse fetch — a relation just opened, a page just moved,
