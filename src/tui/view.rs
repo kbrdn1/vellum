@@ -322,11 +322,12 @@ fn truncate(s: &str, max: usize) -> String {
   out
 }
 
-/// Bold border when a pane has focus, plain otherwise.
+/// Accent (cyan, bold) border when a pane has focus, dim (dark gray) otherwise —
+/// a visible colour diff, not just a weight change.
 fn focus_style(focused: bool) -> Style {
   if focused {
-    Style::new().add_modifier(Modifier::BOLD)
+    Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD)
   } else {
-    Style::new()
+    Style::new().fg(Color::DarkGray)
   }
 }

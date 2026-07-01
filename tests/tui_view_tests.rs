@@ -130,6 +130,26 @@ fn render_lines(app: &App, w: u16, h: u16) -> Vec<String> {
   render_to_string(app, w, h).lines().map(String::from).collect()
 }
 
+#[test]
+fn browse_colours_the_focused_pane_border() {
+  // Focus is marked by border *colour*, not just weight: the focused pane's
+  // border is the accent, the idle pane's is dim — a visible colour diff.
+  let app = browse_app(); // focus starts on the sidebar
+  let mut terminal = Terminal::new(TestBackend::new(80, 10)).unwrap();
+  terminal.draw(|f| view::render(f, &app)).unwrap();
+  let buf = terminal.backend().buffer();
+  // Row 1 (below the header) holds both panes' top borders: the sidebar's left
+  // corner at col 0, the table's at the sidebar width (28).
+  let sidebar_border = buf[(0, 1)].fg;
+  let table_border = buf[(28, 1)].fg;
+  assert_ne!(sidebar_border, table_border, "focused vs idle border differ in colour");
+  assert_eq!(
+    sidebar_border,
+    Color::Cyan,
+    "the focused (sidebar) border is the accent"
+  );
+}
+
 /// Open `users` and feed it a two-row page — the shared setup for the browse
 /// chrome tests below.
 fn opened_browse_app() -> App {
