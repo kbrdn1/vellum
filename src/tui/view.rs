@@ -15,6 +15,7 @@ use ratatui::Frame;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::tui::app::{App, Focus};
+use crate::tui::state::sidebar::SidebarKind;
 use crate::tui::state::sort::{Sort, SortDir};
 
 /// Upper bound on a single column's rendered width, so one very wide cell can't
@@ -69,10 +70,11 @@ fn render_sidebar(frame: &mut Frame, app: &App, area: Rect) {
           "▸ "
         }
       } else {
-        ""
+        "  " // pad leaves so their icon aligns under the expandable rows'
       };
+      let icon = sidebar_icon(node.kind);
       let count = node.count.map(|c| format!(" ({c})")).unwrap_or_default();
-      ListItem::new(format!("{indent}{marker}{}{count}", node.label))
+      ListItem::new(format!("{indent}{marker}{icon} {}{count}", node.label))
     })
     .collect();
   let title = format!(" [1] Schema ({}) ", sidebar.schema_count());
@@ -89,6 +91,19 @@ fn render_sidebar(frame: &mut Frame, app: &App, area: Rect) {
     state.select(Some(sidebar.selected()));
   }
   frame.render_stateful_widget(list, area, &mut state);
+}
+
+/// A nerd-font glyph per node kind (gwm working-tree style): database, schema
+/// (folder), table, view (eye), column (columns). Requires a nerd font in the
+/// terminal — the same assumption gwm's working-tree pane makes.
+fn sidebar_icon(kind: SidebarKind) -> &'static str {
+  match kind {
+    SidebarKind::Database => "\u{f1c0}", // nf-fa-database
+    SidebarKind::Schema => "\u{f07c}",   // nf-fa-folder_open
+    SidebarKind::Table => "\u{f0ce}",    // nf-fa-table
+    SidebarKind::View => "\u{f06e}",     // nf-fa-eye
+    SidebarKind::Column => "\u{f0db}",   // nf-fa-columns
+  }
 }
 
 /// The result pane. In `browse` the bordered block is titled `[2] <relation>

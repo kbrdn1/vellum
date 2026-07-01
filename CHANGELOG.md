@@ -15,6 +15,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Phase 1 — schema tree nerd-font icons (#89):** the browse sidebar renders a
+  per-kind glyph on each node (database / schema-folder / table / view / column),
+  gwm working-tree style, aligned under the expand markers. Leaf rows pad where
+  the marker would be so their icons line up. Requires a nerd font in the
+  terminal — the same assumption gwm makes.
 - **Phase 1 — browse UI polish, gwm-style (#86):** the browse render moves to a
   `header / body / status` stack. A header line badges the database and pins a
   `vellum <version>` chip; the status line carries the key hints with the page
