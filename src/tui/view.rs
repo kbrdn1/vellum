@@ -59,33 +59,47 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
 fn render_sidebar(frame: &mut Frame, app: &App, area: Rect) {
   let Some(sidebar) = app.sidebar() else { return };
   let nodes = sidebar.visible_nodes();
+  // `last_at_depth[i]` = whether the ancestor at depth `i` was its parent's last
+  // child, so descendants draw `│` (more siblings below) or blank (none). The
+  // nodes arrive in pre-order, so truncating to the current depth leaves exactly
+  // this node's ancestors on the stack.
+  let mut last_at_depth: Vec<bool> = Vec::new();
   let items: Vec<ListItem> = nodes
     .iter()
     .map(|node| {
-      let indent = "  ".repeat(node.depth);
-      let marker = if node.expandable {
+      last_at_depth.truncate(node.depth);
+      let mut prefix = String::new();
+      for &anc_last in &last_at_depth {
+        prefix.push_str(if anc_last { "   " } else { "│  " });
+      }
+      let branch = if node.is_last { "└" } else { "├" };
+      // The expand state rides the connector's second cell: `─` for a leaf,
+      // `▾`/`▸` for an expandable node.
+      let mark = if node.expandable {
         if node.expanded {
-          "▾ "
+          "▾"
         } else {
-          "▸ "
+          "▸"
         }
       } else {
-        "  " // pad leaves so their icon aligns under the expandable rows'
+        "─"
       };
       let icon = sidebar_icon(node.kind);
       let count = node.count.map(|c| format!(" ({c})")).unwrap_or_default();
-      ListItem::new(format!("{indent}{marker}{icon} {}{count}", node.label))
+      last_at_depth.push(node.is_last);
+      ListItem::new(format!("{prefix}{branch}{mark} {icon} {}{count}", node.label))
     })
     .collect();
   let title = format!(" [1] Schema ({}) ", sidebar.schema_count());
+  // No `highlight_symbol` — a prefix would shift the selected row and break the
+  // tree-guide alignment; the reversed row is cursor enough.
   let list = List::new(items)
     .block(
       Block::bordered()
         .title(title)
         .border_style(focus_style(app.focus() == Focus::Sidebar)),
     )
-    .highlight_style(Style::new().add_modifier(Modifier::REVERSED))
-    .highlight_symbol("▶ ");
+    .highlight_style(Style::new().add_modifier(Modifier::REVERSED));
   let mut state = ListState::default();
   if !nodes.is_empty() {
     state.select(Some(sidebar.selected()));
