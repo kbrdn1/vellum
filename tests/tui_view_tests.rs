@@ -202,6 +202,65 @@ fn browse_sidebar_uses_nerd_font_icons_per_node_kind() {
 }
 
 #[test]
+fn browse_sidebar_draws_tree_guides() {
+  // The schema tree shows connector lines (├─ └─ with │ carried down from
+  // ancestors), gwm working-tree style — not just indentation.
+  let catalog = Catalog {
+    databases: vec![Database {
+      name: "app".into(),
+      schemas: vec![Schema {
+        name: "public".into(),
+        relations: vec![
+          Relation {
+            name: "users".into(),
+            kind: RelationKind::Table,
+            columns: vec![CatColumn {
+              name: "id".into(),
+              data_type: "int".into(),
+              nullable: false,
+              primary_key: true,
+            }],
+            foreign_keys: vec![],
+          },
+          Relation {
+            name: "orders".into(),
+            kind: RelationKind::Table,
+            columns: vec![],
+            foreign_keys: vec![],
+          },
+        ],
+      }],
+    }],
+  };
+  let mut app = App::browse(
+    catalog,
+    Capabilities {
+      explain: true,
+      schemas: true,
+      foreign_keys: true,
+    },
+    Backend::Postgres,
+  );
+  app.on_key(' '); // expand db
+  app.on_key('j'); // onto schema
+  app.on_key(' '); // expand schema -> users + orders (users has a `├`, orders a `└`)
+  app.on_key('j'); // onto users
+  app.on_key(' '); // expand users -> column id, carried under a `│`
+  let lines = render_lines(&app, 90, 16);
+  let joined = lines.join("\n");
+  assert!(joined.contains('├'), "a branch connector is drawn:\n{joined}");
+  // The column `id` nests under `users`, which is not the last relation, so a
+  // vertical guide `│` runs to its left before the `└─` connector. Look inside
+  // the sidebar's borders (cols 1..27) so the block borders don't count.
+  let id_row = lines.iter().find(|l| l.contains(" id")).expect("column id row");
+  let inside: String = id_row.chars().skip(1).take(26).collect();
+  assert!(
+    inside.contains('│') && inside.contains('└'),
+    "the nested column carries a vertical guide + last-child connector:\n{id_row}"
+  );
+}
+
+#[test]
 fn browse_sidebar_icons_cover_every_node_kind() {
   // Pin ALL five glyph arms, not just db/table (#90 review): a catalog with
   // schemas shown, a table AND a view, and an expanded table's columns — so the
