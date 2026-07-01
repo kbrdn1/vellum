@@ -119,10 +119,85 @@ fn browse_renders_the_header_sidebar_and_status_without_panicking() {
   let mut app = browse_app();
   app.on_key(' '); // expand the database so `users` shows under it
   let out = render_to_string(&app, 80, 14);
-  assert!(out.contains("vellum"), "the header version chip should appear:\n{out}");
-  assert!(out.contains("main"), "the database appears (header + sidebar):\n{out}");
+  assert!(out.contains("sqlite"), "the header engine badge should appear:\n{out}");
+  assert!(out.contains("main"), "the database appears in the sidebar:\n{out}");
   assert!(out.contains("users"), "the expanded relation should appear:\n{out}");
   assert!(out.contains("sort"), "the status-line key hints should appear:\n{out}");
+}
+
+/// Render once and split into rows, for structural (row-relative) assertions.
+fn render_lines(app: &App, w: u16, h: u16) -> Vec<String> {
+  render_to_string(app, w, h).lines().map(String::from).collect()
+}
+
+/// Open `users` and feed it a two-row page — the shared setup for the browse
+/// chrome tests below.
+fn opened_browse_app() -> App {
+  let mut app = browse_app();
+  app.on_key(' '); // expand db
+  app.on_key('j'); // onto users
+  app.on_key('\n'); // open it
+  app.take_page_target(); // drain the open (the runtime would fetch)
+  app.set_displayed_query(r#"SELECT * FROM "main"."users" ORDER BY "id" DESC LIMIT 51 OFFSET 0"#.into());
+  app.apply_page(QueryResult {
+    columns: vec![Column {
+      name: "id".into(),
+      kind: TypeKind::Int,
+    }],
+    rows: vec![vec![Value::Int(1)], vec![Value::Int(2)]],
+    affected: None,
+  });
+  app
+}
+
+#[test]
+fn browse_status_line_shows_the_context_breadcrumb() {
+  // The status line carries the current context (`schema.relation`), not the
+  // page range (#86 feedback — the `N of N` counter already gives position).
+  let out = render_to_string(&opened_browse_app(), 80, 14);
+  assert!(
+    out.contains("main.users"),
+    "status shows the context breadcrumb:\n{out}"
+  );
+  assert!(!out.contains("rows 1"), "the redundant page range is gone:\n{out}");
+}
+
+#[test]
+fn browse_sidebar_pane_is_numbered_and_the_db_node_counts_relations() {
+  let out = render_to_string(&opened_browse_app(), 80, 14);
+  assert!(out.contains("[1] Schema"), "numbered sidebar pane title:\n{out}");
+  assert!(out.contains("main (1)"), "db node shows its relation count:\n{out}");
+}
+
+#[test]
+fn browse_table_pane_is_numbered_with_the_relation_and_loaded_count() {
+  let out = render_to_string(&opened_browse_app(), 80, 14);
+  assert!(
+    out.contains("[2] users"),
+    "numbered table pane title with the relation:\n{out}"
+  );
+  assert!(out.contains("(2)"), "loaded-rows count in the table title:\n{out}");
+}
+
+#[test]
+fn browse_nests_the_query_inside_the_block_with_a_separator() {
+  // The query sits INSIDE the bordered block (title border above it), then a
+  // horizontal rule, then the grid — matching the gwm-style mock.
+  let lines = render_lines(&opened_browse_app(), 80, 14);
+  let qi = lines
+    .iter()
+    .position(|l| l.contains("SELECT"))
+    .expect("query is rendered");
+  assert!(
+    lines[qi - 1].contains("users"),
+    "the titled top border sits directly above the query:\n{}",
+    lines[qi - 1]
+  );
+  let sep = &lines[qi + 1];
+  assert!(
+    sep.matches('─').count() >= 10 && !sep.contains("users"),
+    "a separator rule sits between the query and the grid:\n{sep}"
+  );
 }
 
 #[test]
