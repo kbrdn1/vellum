@@ -688,6 +688,27 @@ fn status_line_styles_the_hint_keys_like_gwm() {
 }
 
 #[test]
+fn status_line_never_exceeds_the_requested_width() {
+  // Regression (codex #91 P2): when the hints truncate, the `…` marker plus its
+  // separating space must fit inside `width` — not spill a cell past it (e.g.
+  // `status_line("", None, 10)` was 11 cells).
+  for w in 4..48 {
+    let logged = flat(&status_line("main.users", Some("a fairly long error message"), w));
+    assert!(
+      logged.chars().count() <= w,
+      "logged, width {w}: {logged:?} = {}",
+      logged.chars().count()
+    );
+    let bare = flat(&status_line("", None, w));
+    assert!(
+      bare.chars().count() <= w,
+      "bare, width {w}: {bare:?} = {}",
+      bare.chars().count()
+    );
+  }
+}
+
+#[test]
 fn status_line_colours_the_log_message() {
   // The error surface is visibly an error — a red-ish foreground, not the muted
   // hint colour.

@@ -186,3 +186,38 @@ fn apply_fetch_clears_the_error_and_records_the_query_on_success() {
     "the page rows are applied"
   );
 }
+
+#[test]
+fn apply_fetch_clears_the_stale_page_on_failure() {
+  // A good page of `users` is showing, then opening `orders` fails to fetch:
+  // the old `users` rows must not linger under the new relation's title (codex
+  // #91 P2). The displayed page is cleared alongside recording the error.
+  let mut app = browse_app();
+  apply_fetch(
+    &mut app,
+    r#"SELECT * FROM "main"."users""#.into(),
+    Ok(QueryResult {
+      columns: vec![Column {
+        name: "id".into(),
+        kind: TypeKind::Int,
+      }],
+      rows: vec![vec![Value::Int(1)], vec![Value::Int(2)]],
+      affected: None,
+    }),
+    &rel("", "users"),
+  );
+  assert_eq!(app.page_loaded_label().as_deref(), Some("2"), "two rows are showing");
+
+  apply_fetch(
+    &mut app,
+    r#"SELECT * FROM "public"."orders""#.into(),
+    Err(VellumError::Driver("no such table: orders".into())),
+    &rel("public", "orders"),
+  );
+  assert!(app.fetch_error().is_some(), "the error is recorded");
+  assert_eq!(
+    app.page_loaded_label().as_deref(),
+    Some("0"),
+    "the stale page is cleared, not left under the new title"
+  );
+}
