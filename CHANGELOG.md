@@ -15,6 +15,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Phase 1 — browse UI polish, gwm-style (#86):** the browse render moves to a
+  `header / body / status` stack. A header line badges the database and pins a
+  `vellum <version>` chip; the status line carries the key hints with the page
+  range (`rows X-Y`) pinned right. The result table is now titled with the open
+  relation's name (not the literal "vellum"), shows a descending sort in its
+  top-right corner and a `N of N` cursor counter bottom-right, and renders the
+  page query on its own line above the grid. The sidebar is a fixed, narrower
+  width. The line/counter builders (`header_line`, `status_line`, `row_counter`,
+  `sort_indicator`) are pure — `Line`/`String`, no backend — and unit-tested
+  directly, mirroring gwm's `header_line` / `pane_counter`.
 - **Phase 1 — browse runtime, the UI goes live (#83):** the browse pure-state
   (#14 sidebar, #15 pagination, #19 sort) is now **reachable and rendered**.
   `vellum --db <FILE>` (no SQL) connects SQLite, introspects the schema, and
