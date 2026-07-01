@@ -15,6 +15,7 @@ use ratatui::Frame;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::tui::app::{App, Focus};
+use crate::tui::state::sidebar::SidebarKind;
 use crate::tui::state::sort::{Sort, SortDir};
 
 /// Upper bound on a single column's rendered width, so one very wide cell can't
@@ -58,30 +59,44 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
 fn render_sidebar(frame: &mut Frame, app: &App, area: Rect) {
   let Some(sidebar) = app.sidebar() else { return };
   let nodes = sidebar.visible_nodes();
+  // `last_at_depth[i]` = whether the ancestor at depth `i` was its parent's last
+  // child, so descendants draw `│` (more siblings below) or blank (none). The
+  // nodes arrive in pre-order, so truncating to the current depth leaves exactly
+  // this node's ancestors on the stack.
+  let mut last_at_depth: Vec<bool> = Vec::new();
   let items: Vec<ListItem> = nodes
     .iter()
     .map(|node| {
-      let indent = "  ".repeat(node.depth);
-      let marker = if node.expandable {
-        if node.expanded {
-          "▾ "
-        } else {
-          "▸ "
-        }
-      } else {
-        ""
-      };
+      last_at_depth.truncate(node.depth);
+      let mut prefix = String::new();
+      for &anc_last in &last_at_depth {
+        prefix.push_str(if anc_last { "   " } else { "│  " });
+      }
+      let branch = if node.is_last { "└─" } else { "├─" };
+      let icon = sidebar_icon(node.kind);
       let count = node.count.map(|c| format!(" ({c})")).unwrap_or_default();
-      ListItem::new(format!("{indent}{marker}{}{count}", node.label))
+      last_at_depth.push(node.is_last);
+      // Connectors stay default; the icon + label (two spaces apart) carry the
+      // per-kind colour so schemas / views read distinctly.
+      ListItem::new(Line::from(vec![
+        Span::raw(format!("{prefix}{branch} ")),
+        Span::styled(format!("{icon}  {}{count}", node.label), sidebar_style(node.kind)),
+      ]))
     })
     .collect();
   let title = format!(" [1] Schema ({}) ", sidebar.schema_count());
+  // A left-pinned cursor follows the selection; ratatui reserves the symbol
+  // gutter on every row, so the tree guides stay aligned. No `▾`/`▸` expand
+  // glyphs — the reversed row + cursor mark the selection instead. A `N of M`
+  // node counter sits bottom-right, mirroring the table pane.
+  let mut block = Block::bordered()
+    .title(title)
+    .border_style(focus_style(app.focus() == Focus::Sidebar));
+  if let Some(counter) = row_counter(sidebar.selected() + 1, nodes.len()) {
+    block = block.title_bottom(Line::from(counter).right_aligned());
+  }
   let list = List::new(items)
-    .block(
-      Block::bordered()
-        .title(title)
-        .border_style(focus_style(app.focus() == Focus::Sidebar)),
-    )
+    .block(block)
     .highlight_style(Style::new().add_modifier(Modifier::REVERSED))
     .highlight_symbol("▶ ");
   let mut state = ListState::default();
@@ -89,6 +104,30 @@ fn render_sidebar(frame: &mut Frame, app: &App, area: Rect) {
     state.select(Some(sidebar.selected()));
   }
   frame.render_stateful_widget(list, area, &mut state);
+}
+
+/// A nerd-font glyph per node kind (gwm working-tree style): database, schema
+/// (folder), table, view (eye), column (columns). Requires a nerd font in the
+/// terminal — the same assumption gwm's working-tree pane makes.
+fn sidebar_icon(kind: SidebarKind) -> &'static str {
+  match kind {
+    SidebarKind::Database => "\u{f1c0}", // nf-fa-database
+    SidebarKind::Schema => "\u{f07c}",   // nf-fa-folder_open
+    SidebarKind::Table => "\u{f0ce}",    // nf-fa-table
+    SidebarKind::View => "\u{f06e}",     // nf-fa-eye
+    SidebarKind::Column => "\u{f0db}",   // nf-fa-columns
+  }
+}
+
+/// A per-kind colour for the icon + label, so schemas and views read distinctly
+/// from tables at a glance. Tables / databases / columns keep the default
+/// foreground (`fg == None`).
+fn sidebar_style(kind: SidebarKind) -> Style {
+  match kind {
+    SidebarKind::Schema => Style::new().fg(Color::Yellow),
+    SidebarKind::View => Style::new().fg(Color::Magenta),
+    _ => Style::new(),
+  }
 }
 
 /// The result pane. In `browse` the bordered block is titled `[2] <relation>

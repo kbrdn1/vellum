@@ -57,6 +57,12 @@ pub struct SidebarNode {
   /// the number of relations under a database node. `None` for nodes without a
   /// meaningful count (relations, columns).
   pub count: Option<usize>,
+  /// Whether this node is the last among its siblings — the view draws `└` vs
+  /// `├` and carries `│` / ` ` down to descendants. (With `show_schemas ==
+  /// false` and *several* schemas, relations of different schemas are flattened
+  /// under the database, so this is per-schema, not per-database — a cosmetic
+  /// edge case; the common single-schema / schemas-shown cases are exact.)
+  pub is_last: bool,
 }
 
 /// Cursor + expand state over a catalog tree.
@@ -192,6 +198,7 @@ impl SidebarState {
           expandable,
           expanded,
           count: Some(db.schemas.iter().map(|s| s.relations.len()).sum()),
+          is_last: di == self.catalog.databases.len() - 1,
         },
       ));
       if !expanded {
@@ -210,6 +217,7 @@ impl SidebarState {
               expandable: !schema.relations.is_empty(),
               expanded: s_expanded,
               count: None,
+              is_last: si == db.schemas.len() - 1,
             },
           ));
           if s_expanded {
@@ -240,6 +248,7 @@ impl SidebarState {
           expandable: !rel.columns.is_empty(),
           expanded: r_expanded,
           count: None,
+          is_last: ri == schema.relations.len() - 1,
         },
       ));
       if r_expanded {
@@ -253,6 +262,7 @@ impl SidebarState {
               expandable: false,
               expanded: false,
               count: None,
+              is_last: ci == rel.columns.len() - 1,
             },
           ));
         }
