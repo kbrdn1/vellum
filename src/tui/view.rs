@@ -1,10 +1,11 @@
 //! Thin ratatui render. No app logic, no `println!`: it turns the immutable
 //! [`App`] state into widgets and nothing more. The browse layout is a gwm-style
-//! `header / body / status` stack; the body is the schema sidebar plus a result
-//! pane (the page query on its own line, then the bordered table). The pure
-//! line/counter builders ([`header_line`], [`row_counter`], [`sort_indicator`],
-//! [`status_line`]) return `Line`/`String` with no backend, so they are
-//! unit-tested directly in `tui_view_tests.rs`; the render fns just place them.
+//! `header / body / status` stack; the body is the `[1] Schema` sidebar plus the
+//! `[2] <relation>` result pane, whose bordered block nests the page query, a
+//! separator rule, then the grid. The pure line/counter builders
+//! ([`header_line`], [`row_counter`], [`sort_indicator`], [`status_line`])
+//! return `Line`/`String` with no backend, so they are unit-tested directly in
+//! `tui_view_tests.rs`; the render fns just place them.
 
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
@@ -40,33 +41,20 @@ fn render_browse(frame: &mut Frame, app: &App) {
   render_header(frame, app, rows[0]);
   let body = Layout::horizontal([Constraint::Length(SIDEBAR_WIDTH), Constraint::Min(0)]).split(rows[1]);
   render_sidebar(frame, app, body[0]);
-  render_result(frame, app, body[1]);
+  render_table(frame, app, body[1], true);
   render_footer(frame, app, rows[2]);
 }
 
-/// Top bar: the database badge and the pinned `vellum <version>` chip.
+/// Top bar: the engine badge (`sqlite` / `postgres` / `mysql`) and the pinned
+/// `vellum <version>` chip.
 fn render_header(frame: &mut Frame, app: &App, area: Rect) {
-  let line = header_line(app.database_name().unwrap_or(""), area.width as usize);
-  frame.render_widget(Paragraph::new(line), area);
+  let engine = app.backend().map(|b| b.as_str()).unwrap_or("");
+  frame.render_widget(Paragraph::new(header_line(engine, area.width as usize)), area);
 }
 
-/// The result pane: the page query on its own line, then the bordered table
-/// below it (the table's top border is the separator).
-fn render_result(frame: &mut Frame, app: &App, area: Rect) {
-  let parts = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(area);
-  let query = truncate(app.displayed_query().unwrap_or(""), parts[0].width as usize);
-  frame.render_widget(
-    Paragraph::new(Line::from(Span::styled(
-      query,
-      Style::new().add_modifier(Modifier::DIM),
-    ))),
-    parts[0],
-  );
-  render_table(frame, app, parts[1], true);
-}
-
-/// The schema tree: each visible node indented by its depth, expandable nodes
-/// marked, the cursor highlighted. The border brightens when the pane is focused.
+/// The schema tree, gwm-style: a `[1] Schema (N)` pane title, each visible node
+/// indented by its depth with an expand marker and its optional `(count)`, the
+/// cursor prefixed with `▶ `. The border brightens when the pane is focused.
 fn render_sidebar(frame: &mut Frame, app: &App, area: Rect) {
   let Some(sidebar) = app.sidebar() else { return };
   let nodes = sidebar.visible_nodes();
@@ -83,16 +71,19 @@ fn render_sidebar(frame: &mut Frame, app: &App, area: Rect) {
       } else {
         ""
       };
-      ListItem::new(format!("{indent}{marker}{}", node.label))
+      let count = node.count.map(|c| format!(" ({c})")).unwrap_or_default();
+      ListItem::new(format!("{indent}{marker}{}{count}", node.label))
     })
     .collect();
+  let title = format!(" [1] Schema ({}) ", sidebar.schema_count());
   let list = List::new(items)
     .block(
       Block::bordered()
-        .title("schema")
+        .title(title)
         .border_style(focus_style(app.focus() == Focus::Sidebar)),
     )
-    .highlight_style(Style::new().add_modifier(Modifier::REVERSED));
+    .highlight_style(Style::new().add_modifier(Modifier::REVERSED))
+    .highlight_symbol("▶ ");
   let mut state = ListState::default();
   if !nodes.is_empty() {
     state.select(Some(sidebar.selected()));
@@ -100,12 +91,77 @@ fn render_sidebar(frame: &mut Frame, app: &App, area: Rect) {
   frame.render_stateful_widget(list, area, &mut state);
 }
 
-/// The result grid into `area`. In `browse` the block is titled with the open
-/// relation's name, a non-ascending sort shows top-right and a `N of N` cursor
-/// counter bottom-right; the one-shot view (`browse == false`) keeps the plain
-/// `vellum` title with none of that chrome. Columns are widthed to their widest
-/// visible cell (clamped).
+/// The result pane. In `browse` the bordered block is titled `[2] <relation>
+/// (<loaded>)`, shows a non-ascending sort top-right and a `N of N` cursor
+/// counter bottom-right, and nests the page query then a separator rule above
+/// the grid (the gwm-style mock). The one-shot view (`browse == false`) is the
+/// plain `vellum`-titled grid with none of that chrome.
 fn render_table(frame: &mut Frame, app: &App, area: Rect, browse: bool) {
+  let block = result_block(app, browse);
+  let inner = block.inner(area);
+  frame.render_widget(block, area);
+  if browse {
+    let parts = Layout::vertical([Constraint::Length(1), Constraint::Length(1), Constraint::Min(0)]).split(inner);
+    render_query(frame, app, parts[0]);
+    render_rule(frame, parts[1]);
+    render_grid(frame, app, parts[2]);
+  } else {
+    render_grid(frame, app, inner);
+  }
+}
+
+/// The bordered chrome around the grid: the pane title (`[2] <relation>
+/// (<loaded>)` in browse, ` vellum ` one-shot), plus the top-right sort
+/// indicator and the bottom-right cursor counter (browse only).
+fn result_block(app: &App, browse: bool) -> Block<'static> {
+  let block = Block::bordered().border_style(focus_style(app.focus() == Focus::Table));
+  if !browse {
+    return block.title(" vellum ");
+  }
+  let title = match app.current_relation() {
+    Some(r) => {
+      let count = app.page_loaded_label().map(|n| format!(" ({n})")).unwrap_or_default();
+      format!(" [2] {}{count} ", r.relation)
+    }
+    None => " [2] results ".to_string(),
+  };
+  let mut block = block.title(title);
+  if let Some(indicator) = sort_indicator(app.sort()) {
+    block = block.title_top(Line::from(indicator).right_aligned());
+  }
+  if let Some(counter) = row_counter(app.table().selected() + 1, app.table().rows().len()) {
+    block = block.title_bottom(Line::from(counter).right_aligned());
+  }
+  block
+}
+
+/// The page query on its own line, dimmed.
+fn render_query(frame: &mut Frame, app: &App, area: Rect) {
+  let query = truncate(app.displayed_query().unwrap_or(""), area.width as usize);
+  frame.render_widget(
+    Paragraph::new(Line::from(Span::styled(
+      query,
+      Style::new().add_modifier(Modifier::DIM),
+    ))),
+    area,
+  );
+}
+
+/// A horizontal separator rule spanning `area`, dimmed — the divider between the
+/// query line and the grid.
+fn render_rule(frame: &mut Frame, area: Rect) {
+  let rule = "─".repeat(area.width as usize);
+  frame.render_widget(
+    Paragraph::new(Line::from(Span::styled(rule, Style::new().add_modifier(Modifier::DIM)))),
+    area,
+  );
+}
+
+/// The result grid into `area` (no block — the caller draws the chrome). The
+/// header is bold, the selected row reversed; columns are widthed to their
+/// widest visible cell (clamped) after skipping the horizontally-scrolled
+/// leading columns.
+fn render_grid(frame: &mut Frame, app: &App, area: Rect) {
   let state = app.table();
   let offset = state.col_offset();
   let col_count = state.columns().len();
@@ -130,28 +186,10 @@ fn render_table(frame: &mut Frame, app: &App, area: Rect, browse: bool) {
     })
     .collect();
 
-  let mut block = Block::bordered().border_style(focus_style(app.focus() == Focus::Table));
-  if browse {
-    let title = app
-      .current_relation()
-      .map(|r| r.relation.clone())
-      .unwrap_or_else(|| "results".to_string());
-    block = block.title(title);
-    if let Some(indicator) = sort_indicator(app.sort()) {
-      block = block.title_top(Line::from(indicator).right_aligned());
-    }
-    if let Some(counter) = row_counter(state.selected() + 1, state.rows().len()) {
-      block = block.title_bottom(Line::from(counter).right_aligned());
-    }
-  } else {
-    block = block.title("vellum");
-  }
-
   let table = Table::new(rows, widths)
     .header(header)
     .row_highlight_style(Style::new().add_modifier(Modifier::REVERSED))
-    .highlight_symbol(">> ")
-    .block(block);
+    .highlight_symbol(">> ");
 
   let mut ts = TableState::default();
   if !state.rows().is_empty() {
@@ -160,18 +198,20 @@ fn render_table(frame: &mut Frame, app: &App, area: Rect, browse: bool) {
   frame.render_stateful_widget(table, area, &mut ts);
 }
 
-/// Bottom bar: key hints on the left, the page range (`rows X-Y`) pinned right.
+/// Bottom bar: key hints on the left, the context breadcrumb
+/// (`schema.relation`) pinned right.
 fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
-  let line = status_line(app.page_counter().as_deref().unwrap_or(""), area.width as usize);
+  let line = status_line(&app.context_label(), area.width as usize);
   frame.render_widget(Paragraph::new(line), area);
 }
 
 // ── Pure builders (no ratatui backend — unit-tested in tui_view_tests.rs) ──
 
-/// The header line: a ` <database> ` badge on the left, the ` vellum <version> `
-/// chip pinned right, space-padded to exactly `width`. Narrower than the chip,
-/// the chip is clipped alone; zero width is an empty line.
-pub fn header_line(database: &str, width: usize) -> Line<'static> {
+/// The header line: a ` <label> ` badge on the left (the engine tag), the
+/// ` vellum <version> ` chip pinned right, space-padded to exactly `width`.
+/// Narrower than the chip, the chip is clipped alone; zero width is an empty
+/// line.
+pub fn header_line(label: &str, width: usize) -> Line<'static> {
   if width == 0 {
     return Line::default();
   }
@@ -183,8 +223,8 @@ pub fn header_line(database: &str, width: usize) -> Line<'static> {
   }
   let mut spans: Vec<Span<'static>> = Vec::new();
   let mut used = 0usize;
-  if !database.is_empty() {
-    let badge = truncate(&format!(" {database} "), width - version_w);
+  if !label.is_empty() {
+    let badge = truncate(&format!(" {label} "), width - version_w);
     used = badge.width();
     spans.push(Span::styled(badge, Style::new().add_modifier(Modifier::BOLD)));
   }
@@ -193,30 +233,31 @@ pub fn header_line(database: &str, width: usize) -> Line<'static> {
   Line::from(spans)
 }
 
-/// Key hints on the left, the page range pinned to the right, padded to `width`.
-/// An empty range just leaves the hints.
-pub fn status_line(range: &str, width: usize) -> Line<'static> {
+/// gwm-style: the context breadcrumb pinned to the left (bold), the key hints
+/// filling the rest to the right (dim), padded to `width`. The context is
+/// reserved first so it survives when the hints must shrink; it is dropped only
+/// when even it can't fit.
+pub fn status_line(context: &str, width: usize) -> Line<'static> {
   const HINTS: &str = " Tab focus · Enter open · n/p page · s sort · q quit ";
   if width == 0 {
     return Line::default();
   }
-  let range_text = if range.is_empty() {
+  let context_text = if context.is_empty() {
     String::new()
   } else {
-    format!(" {range} ")
+    format!(" {context} ")
   };
-  let range_w = range_text.width();
-  // Reserve the range's width first so it stays pinned to the right even when
-  // the hints must shrink to make room; drop it only when it can't fit at all.
-  let fits = range_w > 0 && range_w <= width;
-  let hints_budget = if fits { width - range_w } else { width };
-  let hints = truncate(HINTS, hints_budget);
+  let context_w = context_text.width();
+  let fits = context_w > 0 && context_w <= width;
+  let shown_context_w = if fits { context_w } else { 0 };
+  let hints = truncate(HINTS, width - shown_context_w);
   let hints_w = hints.width();
-  let mut spans = vec![Span::styled(hints, Style::new().add_modifier(Modifier::DIM))];
+  let mut spans = Vec::new();
   if fits {
-    spans.push(Span::raw(" ".repeat(width - hints_w - range_w)));
-    spans.push(Span::styled(range_text, Style::new().add_modifier(Modifier::BOLD)));
+    spans.push(Span::styled(context_text, Style::new().add_modifier(Modifier::BOLD)));
   }
+  spans.push(Span::raw(" ".repeat(width - shown_context_w - hints_w)));
+  spans.push(Span::styled(hints, Style::new().add_modifier(Modifier::DIM)));
   Line::from(spans)
 }
 

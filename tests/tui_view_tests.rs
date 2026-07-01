@@ -188,14 +188,20 @@ fn browse_nests_the_query_inside_the_block_with_a_separator() {
     .iter()
     .position(|l| l.contains("SELECT"))
     .expect("query is rendered");
+  // The `[2] …` table pane title border sits directly above the query (so the
+  // query is inside the block, not floating above it). `[2]` is unique to the
+  // table pane — the sidebar's `[1]` and the header carry neither.
   assert!(
-    lines[qi - 1].contains("users"),
-    "the titled top border sits directly above the query:\n{}",
+    lines[qi - 1].contains("[2]"),
+    "the table pane title border sits directly above the query:\n{}",
     lines[qi - 1]
   );
+  // A separator rule sits between the query and the grid. Panes share buffer
+  // rows (sidebar on the left), so only assert the dash run — the sidebar text
+  // on the same row is expected.
   let sep = &lines[qi + 1];
   assert!(
-    sep.matches('─').count() >= 10 && !sep.contains("users"),
+    sep.matches('─').count() >= 10,
     "a separator rule sits between the query and the grid:\n{sep}"
   );
 }
@@ -307,17 +313,20 @@ fn sort_indicator_shows_only_the_descending_case() {
 }
 
 #[test]
-fn status_line_shows_the_hints_and_pins_the_range() {
-  let text = flat(&status_line("rows 1-50", 80));
+fn status_line_pins_the_context_on_the_left_before_the_hints() {
+  // gwm-style: the context breadcrumb reads on the left; the key hints follow.
+  let text = flat(&status_line("main.users", 80));
   assert!(text.contains("sort"), "key hints present: {text:?}");
-  assert!(text.contains("rows 1-50"), "range pinned: {text:?}");
+  let ctx = text.find("main.users").expect("context present");
+  let hints = text.find("Tab focus").expect("hints present");
+  assert!(ctx < hints, "context sits left of the hints: {text:?}");
 }
 
 #[test]
-fn status_line_keeps_the_range_pinned_by_shrinking_the_hints() {
-  // At a medium width the full hints + range don't both fit; the range must
-  // stay pinned right (the hints shrink to make room) rather than vanish.
-  let text = flat(&status_line("rows 1-50", 60));
-  assert!(text.contains("rows 1-50"), "range stays pinned: {text:?}");
-  assert_eq!(text.chars().count(), 60, "still padded to the exact width");
+fn status_line_keeps_the_context_by_shrinking_the_hints() {
+  // At a medium width the full hints + context don't both fit; the context
+  // stays (pinned left) and the hints shrink rather than the context vanishing.
+  let text = flat(&status_line("main.users", 40));
+  assert!(text.contains("main.users"), "context stays: {text:?}");
+  assert_eq!(text.chars().count(), 40, "still padded to the exact width");
 }
