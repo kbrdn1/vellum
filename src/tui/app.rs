@@ -289,6 +289,21 @@ impl App {
     }
   }
 
+  /// Drop the displayed page — empty the grid and zero the loaded count —
+  /// without touching the pagination cursor. Called when a browse fetch fails so
+  /// the previous relation's rows can't linger under the new relation's title
+  /// (#85). No-op outside browse mode (nothing paginated to clear).
+  pub fn clear_page(&mut self) {
+    if let Some(paginator) = self.paginator.as_mut() {
+      paginator.record(0);
+      self.table = TableState::new(QueryResult {
+        columns: Vec::new(),
+        rows: Vec::new(),
+        affected: None,
+      });
+    }
+  }
+
   /// Open a relation picked in the sidebar: record the intent for the loader to
   /// fetch, and **restart pagination from page 0** — a freshly-opened relation
   /// must not inherit the previous one's page offset, page request, or sort

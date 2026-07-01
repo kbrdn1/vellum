@@ -364,8 +364,11 @@ pub fn status_line(context: &str, message: Option<&str>, width: usize) -> Line<'
     hint_used += badge_w;
   }
   used += hint_used;
-  if truncated {
-    if used > 0 {
+  // The `…` marker (and its separating space) must stay inside `avail` — the
+  // context chip alone can consume it all, leaving no room, in which case the
+  // marker is dropped rather than spilling a cell past `width`.
+  if truncated && used < avail {
+    if used > 0 && avail - used >= 2 {
       spans.push(Span::raw(" "));
       used += 1;
     }

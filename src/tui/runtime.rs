@@ -89,6 +89,7 @@ pub fn apply_fetch(app: &mut App, sql: String, result: Result<QueryResult>, rela
     }
     Err(e) => {
       app.set_fetch_error(format!("{}.{}: {e}", relation.schema, relation.relation));
+      app.clear_page(); // don't leave the old relation's rows under the new title
     }
   }
 }
