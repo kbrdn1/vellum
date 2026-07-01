@@ -56,6 +56,16 @@ pub struct App {
   quit: bool,
 }
 
+/// An empty result grid — the initial table for browse/query mode and the
+/// placeholder a cleared page falls back to.
+fn empty_result() -> QueryResult {
+  QueryResult {
+    columns: Vec::new(),
+    rows: Vec::new(),
+    affected: None,
+  }
+}
+
 /// What the runtime should fetch for the browse table, derived entirely from
 /// `App` state by [`App::take_page_target`]: the open relation, the page bounds,
 /// and the (optional) sort clause. The runtime turns this into a single
@@ -96,11 +106,7 @@ impl App {
   /// that selecting a relation fills (#15). Focus starts on the sidebar.
   /// `capabilities.schemas` collapses the schema level for engines without one.
   pub fn browse(catalog: Catalog, capabilities: Capabilities, backend: Backend) -> Self {
-    let empty = QueryResult {
-      columns: Vec::new(),
-      rows: Vec::new(),
-      affected: None,
-    };
+    let empty = empty_result();
     Self {
       table: TableState::new(empty),
       sidebar: Some(SidebarState::new(catalog, capabilities.schemas)),
@@ -124,11 +130,7 @@ impl App {
   /// (#16). Focus starts on the editor; `Tab` toggles editor↔table; submitting
   /// (Ctrl-Enter) emits a run-query intent the runtime services read-only.
   pub fn query() -> Self {
-    let empty = QueryResult {
-      columns: Vec::new(),
-      rows: Vec::new(),
-      affected: None,
-    };
+    let empty = empty_result();
     Self {
       table: TableState::new(empty),
       sidebar: None,
@@ -296,11 +298,7 @@ impl App {
   pub fn clear_page(&mut self) {
     if let Some(paginator) = self.paginator.as_mut() {
       paginator.record(0);
-      self.table = TableState::new(QueryResult {
-        columns: Vec::new(),
-        rows: Vec::new(),
-        affected: None,
-      });
+      self.table = TableState::new(empty_result());
       // Drop the query that produced the now-cleared page so the query line
       // doesn't show stale SQL over an empty grid.
       self.displayed_query = None;
