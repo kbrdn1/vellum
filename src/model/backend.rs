@@ -21,3 +21,15 @@ pub enum Backend {
   MySql,
   Sqlite,
 }
+
+impl Backend {
+  /// The lowercase engine tag, matching the `.vellum.toml` token — the browse
+  /// header badge (`sqlite` / `postgres` / `mysql`).
+  pub fn as_str(&self) -> &'static str {
+    match self {
+      Backend::Postgres => "postgres",
+      Backend::MySql => "mysql",
+      Backend::Sqlite => "sqlite",
+    }
+  }
+}

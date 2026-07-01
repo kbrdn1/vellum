@@ -101,7 +101,7 @@ impl SidebarState {
   /// title count (gwm-style). Counts every schema even when the schema *row* is
   /// hidden (`show_schemas == false`), since the catalog still models one.
   pub fn schema_count(&self) -> usize {
-    0
+    self.catalog.databases.iter().map(|db| db.schemas.len()).sum()
   }
 
   /// Move the cursor down one visible node, clamped to the last.
@@ -191,7 +191,7 @@ impl SidebarState {
           label: db.name.clone(),
           expandable,
           expanded,
-          count: None,
+          count: Some(db.schemas.iter().map(|s| s.relations.len()).sum()),
         },
       ));
       if !expanded {

@@ -169,7 +169,11 @@ impl App {
   /// The status-line context breadcrumb: `schema.relation` once a relation is
   /// open, else the database name (nothing selected yet). Empty in one-shot mode.
   pub fn context_label(&self) -> String {
-    String::new()
+    if let Some(r) = self.current_relation() {
+      format!("{}.{}", r.schema, r.relation)
+    } else {
+      self.database_name().unwrap_or_default().to_string()
+    }
   }
 
   /// The `[2] <table> (N)` count for the open relation's pane title: the number
@@ -177,7 +181,9 @@ impl App {
   /// (no `COUNT(*)` — the browse path never counts). `None` when no page is
   /// loaded or outside browse mode.
   pub fn page_loaded_label(&self) -> Option<String> {
-    None
+    let paginator = self.paginator.as_ref()?;
+    let more = if paginator.has_next() { "+" } else { "" };
+    Some(format!("{}{more}", paginator.visible()))
   }
 
   /// The SQL that produced the currently-displayed page, for the query line.
