@@ -190,6 +190,18 @@ fn browse_sidebar_pane_is_numbered_and_the_db_node_counts_relations() {
 }
 
 #[test]
+fn browse_sidebar_uses_nerd_font_icons_per_node_kind() {
+  // gwm working-tree style: each node carries a type glyph. The db node shows a
+  // database glyph, the opened `users` table shows a table glyph.
+  let out = render_to_string(&opened_browse_app(), 80, 14);
+  assert!(
+    out.contains('\u{f1c0}'),
+    "the database node shows a database glyph:\n{out}"
+  );
+  assert!(out.contains('\u{f0ce}'), "the table node shows a table glyph:\n{out}");
+}
+
+#[test]
 fn browse_table_pane_is_numbered_with_the_relation_and_loaded_count() {
   let out = render_to_string(&opened_browse_app(), 80, 14);
   assert!(
