@@ -21,8 +21,10 @@ use sqlparser::ast::{Query, SetExpr, Statement};
 use sqlparser::dialect::Dialect;
 use sqlparser::parser::Parser;
 
+use crate::config::Connection;
 use crate::error::{Result, VellumError};
 use crate::model::{Backend, Catalog, QueryResult};
+use crate::secrets::Credential;
 
 /// Guard the read path for every backend: reject anything that isn't a single
 /// read-only query before it reaches the database. The `dialect` is the
@@ -156,6 +158,14 @@ pub trait Driver: Send + Sync {
 
   /// What this backend supports, for per-engine UI gating.
   fn capabilities(&self) -> Capabilities;
+}
+
+/// Open a driver for a named `.vellum.toml` connection, resolving the credential
+/// into a live `Box<dyn Driver>` (#95). Real implementation lands in the green
+/// step.
+pub async fn connect_named(conn: &Connection, credential: Option<Credential>) -> Result<Box<dyn Driver>> {
+  let _ = (conn, credential);
+  Err(VellumError::Driver("connect_named not yet implemented".to_string()))
 }
 
 #[cfg(test)]
