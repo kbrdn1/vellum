@@ -10,7 +10,7 @@
 use std::str::FromStr;
 
 use async_trait::async_trait;
-use sqlx::postgres::{PgColumn, PgConnectOptions, PgPool, PgPoolOptions, PgRow};
+use sqlx::postgres::{PgColumn, PgConnectOptions, PgPool, PgPoolOptions, PgRow, PgTypeKind};
 use sqlx::types::BigDecimal;
 // Trait methods imported anonymously to avoid colliding with the domain
 // `Column` / `Row` types.
@@ -330,6 +330,12 @@ fn pg_value_at(row: &PgRow, i: usize) -> Result<Value> {
     return Ok(Value::Null);
   }
   let type_name = raw.type_info().name().to_string();
+  // Arrays dispatch on the structural kind (robust vs. matching `"INT4[]"`
+  // strings); the element type name drives per-element decode.
+  if let PgTypeKind::Array(elem) = raw.type_info().kind() {
+    let elem_name = elem.name().to_string();
+    return decode_pg_array(row, i, &elem_name);
+  }
   let value = match type_name.as_str() {
     "BOOL" => Value::Bool(row.try_get::<bool, _>(i).map_err(driver_err)?),
     "INT2" => Value::Int(i64::from(row.try_get::<i16, _>(i).map_err(driver_err)?)),
@@ -376,6 +382,37 @@ fn pg_value_at(row: &PgRow, i: usize) -> Result<Value> {
     _ => Value::Text(format!("<{}>", type_name.to_lowercase())),
   };
   Ok(value)
+}
+
+/// Decode a PG array cell into `Value::Array`, one `Value` per element. Decodes
+/// `Vec<Option<T>>` (not `Vec<T>`) so a NULL element becomes `Value::Null`
+/// rather than erroring the whole row. Element types beyond the supported
+/// scalars keep the honest `<elem[]>` marker rather than a faked value (#76).
+fn decode_pg_array(row: &PgRow, i: usize, elem_name: &str) -> Result<Value> {
+  // Each arm decodes the typed `Vec<Option<T>>` and maps element → `Value`
+  // (a NULL element → `Value::Null`).
+  macro_rules! decode {
+    ($ty:ty, $map:expr) => {
+      row
+        .try_get::<Vec<Option<$ty>>, _>(i)
+        .map_err(driver_err)?
+        .into_iter()
+        .map(|cell| cell.map_or(Value::Null, $map))
+        .collect::<Vec<Value>>()
+    };
+  }
+  let items = match elem_name {
+    "INT2" => decode!(i16, |v| Value::Int(i64::from(v))),
+    "INT4" => decode!(i32, |v| Value::Int(i64::from(v))),
+    "INT8" => decode!(i64, Value::Int),
+    "FLOAT4" => decode!(f32, |v| Value::Float(f64::from(v))),
+    "FLOAT8" => decode!(f64, Value::Float),
+    "BOOL" => decode!(bool, Value::Bool),
+    "TEXT" | "VARCHAR" | "BPCHAR" | "NAME" => decode!(String, Value::Text),
+    // Unsupported element type — an honest whole-array marker, not a fake value.
+    _ => return Ok(Value::Text(format!("<{}[]>", elem_name.to_lowercase()))),
+  };
+  Ok(Value::Array(items))
 }
 
 /// Render a decoded PG `numeric` as its exact decimal text. sqlx's `BigDecimal`

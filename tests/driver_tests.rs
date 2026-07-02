@@ -671,6 +671,51 @@ mod postgres_it {
   }
 
   #[tokio::test]
+  async fn pg_decodes_arrays_faithfully() {
+    // #76: arrays used to hit the `<int4[]>` marker. Decode per element for the
+    // supported scalars, with a NULL element preserved as `Value::Null` (the
+    // whole row must not die over one NULL). An unsupported element type keeps
+    // the honest array marker.
+    let pool = seed_pool().await;
+    pool.execute("drop table if exists it_arrays").await.expect("drop");
+    pool
+      .execute("create table it_arrays (ints int4[], tags text[], with_null int4[], ranges int4range[])")
+      .await
+      .expect("create table");
+    pool
+      .execute("insert into it_arrays values ('{1,2,3}', '{a,b}', '{1,NULL,3}', array['[1,2)'::int4range])")
+      .await
+      .expect("seed row");
+
+    let driver = PostgresDriver::connect(&dsn()).await.expect("connect read-only");
+    let result = driver
+      .query("select ints, tags, with_null, ranges from it_arrays")
+      .await
+      .expect("query");
+    let row = &result.rows[0];
+    assert_eq!(
+      row[0],
+      Value::Array(vec![Value::Int(1), Value::Int(2), Value::Int(3)]),
+      "int4[]"
+    );
+    assert_eq!(
+      row[1],
+      Value::Array(vec![Value::Text("a".into()), Value::Text("b".into())]),
+      "text[]"
+    );
+    assert_eq!(
+      row[2],
+      Value::Array(vec![Value::Int(1), Value::Null, Value::Int(3)]),
+      "a NULL element stays Null, not a dead row"
+    );
+    assert_eq!(
+      row[3],
+      Value::Text("<int4range[]>".into()),
+      "an unsupported element type keeps the honest array marker"
+    );
+  }
+
+  #[tokio::test]
   async fn pg_query_refuses_a_data_modifying_cte() {
     // THE write-path guard for PG: a data-modifying CTE parses as a single
     // top-level `SELECT` (the sqlparser guard waves it through) but it WRITES.
