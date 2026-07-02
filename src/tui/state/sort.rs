@@ -7,6 +7,8 @@
 //! ascending → descending → off. The runtime reads [`Sort::order_by_clause`]
 //! when it rebuilds the page query.
 
+use crate::model::Backend;
+
 /// Sort direction for the active column.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SortDir {
@@ -22,16 +24,16 @@ pub struct Sort {
 }
 
 impl Sort {
-  /// The `ORDER BY "col" ASC|DESC` clause for the page query. The identifier is
-  /// double-quoted with embedded quotes doubled, so a column named `a"b` can't
-  /// break out of the quoting.
-  pub fn order_by_clause(&self) -> String {
-    let col = self.column.replace('"', "\"\"");
+  /// The `ORDER BY <col> ASC|DESC` clause for the page query, with the column
+  /// quoted for `backend`'s dialect (ANSI double quotes for Postgres / SQLite,
+  /// backticks for MySQL — its default mode reads `"` as a string literal), the
+  /// quote char doubled so a column named `` a"b `` / `` a`b `` can't break out.
+  pub fn order_by_clause(&self, backend: Backend) -> String {
     let dir = match self.dir {
       SortDir::Asc => "ASC",
       SortDir::Desc => "DESC",
     };
-    format!("ORDER BY \"{col}\" {dir}")
+    format!("ORDER BY {} {dir}", backend.quote_ident(&self.column))
   }
 
   /// The sorted column's name.

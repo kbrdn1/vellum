@@ -10,7 +10,7 @@ use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind};
 
 use crate::driver::Driver;
 use crate::error::Result;
-use crate::model::QueryResult;
+use crate::model::{Backend, QueryResult};
 use crate::tui::app::{App, PageTarget};
 use crate::tui::state::sidebar::RelationRef;
 use crate::tui::view;
@@ -67,7 +67,7 @@ async fn browse_loop(terminal: &mut ratatui::DefaultTerminal, driver: &dyn Drive
       }
     }
     if let Some(target) = app.take_page_target() {
-      let sql = page_sql(&target);
+      let sql = page_sql(driver.backend(), &target);
       let result = driver.query(&sql).await;
       apply_fetch(app, sql, result, &target.relation);
     }
@@ -97,11 +97,12 @@ pub fn apply_fetch(app: &mut App, sql: String, result: Result<QueryResult>, rela
 }
 
 /// Build the read-only page query for a browse fetch: `SELECT * FROM
-/// "schema"."relation" [ORDER BY …] LIMIT n OFFSET m`. Identifiers are
-/// double-quoted with embedded quotes doubled, so a name like `a"b` can't break
-/// out of the quoting. Pure — tested in `tui_runtime_tests.rs`.
-pub fn page_sql(target: &PageTarget) -> String {
-  let table = quote_qualified(&target.relation.schema, &target.relation.relation);
+/// <schema>.<relation> [ORDER BY …] LIMIT n OFFSET m`. Identifiers are quoted
+/// for `backend`'s dialect (ANSI double quotes for Postgres / SQLite, backticks
+/// for MySQL) with the quote char doubled, so a name like `a"b` can't break out
+/// of the quoting. Pure — tested in `tui_runtime_tests.rs`.
+pub fn page_sql(backend: Backend, target: &PageTarget) -> String {
+  let table = quote_qualified(backend, &target.relation.schema, &target.relation.relation);
   let order = target
     .order_by
     .as_deref()
@@ -113,14 +114,14 @@ pub fn page_sql(target: &PageTarget) -> String {
   )
 }
 
-/// Double-quote a `schema.relation` identifier (schema omitted when empty).
-fn quote_qualified(schema: &str, relation: &str) -> String {
-  let relation = relation.replace('"', "\"\"");
+/// Quote a `schema.relation` identifier for `backend`'s dialect (schema omitted
+/// when empty).
+fn quote_qualified(backend: Backend, schema: &str, relation: &str) -> String {
+  let relation = backend.quote_ident(relation);
   if schema.is_empty() {
-    format!("\"{relation}\"")
+    relation
   } else {
-    let schema = schema.replace('"', "\"\"");
-    format!("\"{schema}\".\"{relation}\"")
+    format!("{}.{relation}", backend.quote_ident(schema))
   }
 }
 

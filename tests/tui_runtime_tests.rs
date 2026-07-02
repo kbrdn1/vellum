@@ -75,13 +75,16 @@ fn target(schema: &str, relation: &str, order_by: Option<&str>, limit: usize, of
 
 #[test]
 fn page_sql_qualifies_and_bounds_the_select() {
-  let sql = page_sql(&target("main", "users", None, 51, 0));
+  let sql = page_sql(Backend::Sqlite, &target("main", "users", None, 51, 0));
   assert_eq!(sql, r#"SELECT * FROM "main"."users" LIMIT 51 OFFSET 0"#);
 }
 
 #[test]
 fn page_sql_splices_the_order_by_before_the_limit() {
-  let sql = page_sql(&target("main", "users", Some(r#"ORDER BY "name" ASC"#), 51, 50));
+  let sql = page_sql(
+    Backend::Sqlite,
+    &target("main", "users", Some(r#"ORDER BY "name" ASC"#), 51, 50),
+  );
   assert_eq!(
     sql,
     r#"SELECT * FROM "main"."users" ORDER BY "name" ASC LIMIT 51 OFFSET 50"#
@@ -90,14 +93,28 @@ fn page_sql_splices_the_order_by_before_the_limit() {
 
 #[test]
 fn page_sql_quotes_identifiers_so_a_quote_cannot_break_out() {
-  let sql = page_sql(&target("main", r#"a"b"#, None, 10, 0));
+  let sql = page_sql(Backend::Sqlite, &target("main", r#"a"b"#, None, 10, 0));
   assert_eq!(sql, r#"SELECT * FROM "main"."a""b" LIMIT 10 OFFSET 0"#);
 }
 
 #[test]
 fn page_sql_omits_the_schema_when_empty() {
-  let sql = page_sql(&target("", "users", None, 10, 0));
+  let sql = page_sql(Backend::Sqlite, &target("", "users", None, 10, 0));
   assert_eq!(sql, r#"SELECT * FROM "users" LIMIT 10 OFFSET 0"#);
+}
+
+#[test]
+fn page_sql_quotes_identifiers_per_backend() {
+  // MySQL's default mode reads `"` as a string literal, so a Postgres/SQLite
+  // double quote would turn the table name into a string and the query would
+  // fail the moment a relation is opened on a `--conn` MySQL. Identifiers must
+  // be backtick-quoted, with an embedded backtick doubled. Regression guard for
+  // multi-backend browse (#95).
+  let sql = page_sql(Backend::MySql, &target("app", "users", None, 10, 0));
+  assert_eq!(sql, "SELECT * FROM `app`.`users` LIMIT 10 OFFSET 0");
+
+  let sql = page_sql(Backend::MySql, &target("app", "a`b", None, 10, 0));
+  assert_eq!(sql, "SELECT * FROM `app`.`a``b` LIMIT 10 OFFSET 0");
 }
 
 // ── Fetch routing (#85) ────────────────────────────────────────────────────

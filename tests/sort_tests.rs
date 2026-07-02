@@ -2,6 +2,7 @@
 //! is asserted as a string (the clause the runtime splices into the page query)
 //! and the tri-state toggle is driven directly.
 
+use vellum::model::Backend;
 use vellum::tui::state::sort::{toggle_sort, SortDir};
 
 #[test]
@@ -9,7 +10,7 @@ fn first_press_sorts_a_column_ascending() {
   let sort = toggle_sort(None, "name").expect("a sort");
   assert_eq!(sort.column(), "name");
   assert_eq!(sort.dir(), SortDir::Asc);
-  assert_eq!(sort.order_by_clause(), r#"ORDER BY "name" ASC"#);
+  assert_eq!(sort.order_by_clause(Backend::Sqlite), r#"ORDER BY "name" ASC"#);
 }
 
 #[test]
@@ -17,7 +18,7 @@ fn second_press_flips_to_descending() {
   let sort = toggle_sort(None, "name");
   let sort = toggle_sort(sort, "name").expect("still sorted");
   assert_eq!(sort.dir(), SortDir::Desc);
-  assert_eq!(sort.order_by_clause(), r#"ORDER BY "name" DESC"#);
+  assert_eq!(sort.order_by_clause(Backend::Sqlite), r#"ORDER BY "name" DESC"#);
 }
 
 #[test]
@@ -39,5 +40,16 @@ fn sorting_a_different_column_restarts_ascending() {
 #[test]
 fn a_column_name_with_a_quote_is_escaped_not_broken_out_of() {
   let sort = toggle_sort(None, r#"a"b"#).expect("a sort");
-  assert_eq!(sort.order_by_clause(), r#"ORDER BY "a""b" ASC"#);
+  assert_eq!(sort.order_by_clause(Backend::Sqlite), r#"ORDER BY "a""b" ASC"#);
+}
+
+#[test]
+fn order_by_clause_quotes_the_column_per_backend() {
+  // MySQL needs backticks (default mode reads `"` as a string), with an embedded
+  // backtick doubled — else a `--conn` MySQL sort would send a broken query.
+  let sort = toggle_sort(None, "name").expect("a sort");
+  assert_eq!(sort.order_by_clause(Backend::MySql), "ORDER BY `name` ASC");
+
+  let sort = toggle_sort(None, "a`b").expect("a sort");
+  assert_eq!(sort.order_by_clause(Backend::MySql), "ORDER BY `a``b` ASC");
 }
