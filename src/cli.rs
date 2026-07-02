@@ -9,11 +9,12 @@ use std::io::IsTerminal;
 
 use clap::{Parser, Subcommand};
 
-use crate::driver::{Driver, SqliteDriver};
+use crate::config::Config;
+use crate::driver::{connect_named, Driver, SqliteDriver};
 use crate::error::{Result, VellumError};
 use crate::keyring_store::{store_secret, KeyringStore};
 use crate::model::QueryResult;
-use crate::secrets::{SecretStore, SecretString};
+use crate::secrets::{resolve, SecretStore, SecretString};
 use crate::tui;
 use crate::tui::app::App;
 
@@ -47,6 +48,13 @@ pub struct Cli {
   /// quit) instead of printing it to stdout.
   #[arg(short = 'i', long)]
   pub interactive: bool,
+
+  /// Browse a named connection from `.vellum.toml` (read-only). The password is
+  /// resolved from the OS keyring, or a full DSN from a `VELLUM_DSN_<NAME>`
+  /// environment override. Conflicts with `--db` (that opens a SQLite file
+  /// directly).
+  #[arg(long, value_name = "NAME", conflicts_with = "db")]
+  pub conn: Option<String>,
 }
 
 /// vellum subcommands. Phase 1 adds `connect`; the default (no subcommand)
@@ -74,6 +82,17 @@ pub async fn run(cli: Cli) -> Result<()> {
   // none is given.
   if let Some(command) = cli.command {
     return run_command(command);
+  }
+  // `--conn <name>` browses a named `.vellum.toml` connection (read-only). It
+  // conflicts with `--db` at the clap layer; a query against a named connection
+  // is a later phase, so refuse a stray `[SQL]` rather than silently ignore it.
+  if let Some(name) = cli.conn {
+    if cli.sql.is_some() {
+      return Err(VellumError::Arg(
+        "a query against a named connection isn't supported yet — pass `--conn <name>` alone to browse".to_string(),
+      ));
+    }
+    return browse_connection(&name).await;
   }
   let interactive = cli.interactive;
   match (cli.db, cli.sql) {
@@ -124,6 +143,30 @@ fn run_command(command: Command) -> Result<()> {
   match command {
     Command::Connect { name } => connect(&name),
   }
+}
+
+/// `vellum --conn <name>`: load `.vellum.toml`, resolve the connection's
+/// credential (a keyring password, or a full DSN from a `VELLUM_DSN_<NAME>`
+/// override), open the backend read-only, and browse it.
+///
+/// The config load + name lookup run *before* the terminal check on purpose:
+/// they are cheap, local, read-only, and a bad name should report "no such
+/// connection" rather than "needs a terminal". The terminal gate then fails
+/// fast — before the keyring / network — so a piped invocation never opens a
+/// real connection just to bail on the render.
+async fn browse_connection(name: &str) -> Result<()> {
+  let config = Config::load()?;
+  let connection = config.connections.get(name).ok_or_else(|| {
+    VellumError::Arg(format!(
+      "no connection `{name}` in `.vellum.toml` — run `vellum connect {name}` or add a `[connections.{name}]` entry"
+    ))
+  })?;
+  require_terminal()?;
+  let credential = resolve(name, &KeyringStore::new())?;
+  let driver = connect_named(connection, credential).await?;
+  let catalog = driver.introspect().await?;
+  let app = App::browse(catalog, driver.capabilities(), driver.backend());
+  tui::browse(driver, app).await
 }
 
 /// `vellum connect <name>`: read a password with no terminal echo and store it
