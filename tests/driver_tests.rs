@@ -645,16 +645,19 @@ mod postgres_it {
     let pool = seed_pool().await;
     pool.execute("drop table if exists it_numeric").await.expect("drop");
     pool
-      .execute("create table it_numeric (n numeric, big numeric(40, 10), nan numeric)")
+      .execute("create table it_numeric (n numeric, big numeric(40, 10), nan numeric, money numeric(10, 2))")
       .await
       .expect("create table");
     pool
-      .execute("insert into it_numeric values (12345.6789, 1234567890123456789012345678.9012345678, 'NaN')")
+      .execute("insert into it_numeric values (12345.6789, 1234567890123456789012345678.9012345678, 'NaN', 1.20)")
       .await
       .expect("seed row");
 
     let driver = PostgresDriver::connect(&dsn()).await.expect("connect read-only");
-    let result = driver.query("select n, big, nan from it_numeric").await.expect("query");
+    let result = driver
+      .query("select n, big, nan, money from it_numeric")
+      .await
+      .expect("query");
     let row = &result.rows[0];
     assert_eq!(row[0], Value::Decimal("12345.6789".into()), "plain numeric");
     assert_eq!(
@@ -666,6 +669,11 @@ mod postgres_it {
       row[2],
       Value::Text("<numeric>".into()),
       "NaN falls back to the marker, not a crash"
+    );
+    assert_eq!(
+      row[3],
+      Value::Decimal("1.20".into()),
+      "a fixed-scale numeric(10,2) keeps its declared trailing zero (PG's dscale)"
     );
     assert_eq!(
       result.columns[0].kind,

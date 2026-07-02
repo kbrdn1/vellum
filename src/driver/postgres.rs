@@ -10,7 +10,7 @@
 use std::str::FromStr;
 
 use async_trait::async_trait;
-use sqlx::postgres::{PgColumn, PgConnectOptions, PgPool, PgPoolOptions, PgRow, PgTypeKind};
+use sqlx::postgres::{PgColumn, PgConnectOptions, PgPool, PgPoolOptions, PgRow, PgTypeKind, PgValueFormat, PgValueRef};
 use sqlx::types::BigDecimal;
 // Trait methods imported anonymously to avoid colliding with the domain
 // `Column` / `Row` types.
@@ -377,13 +377,7 @@ fn pg_value_at(row: &PgRow, i: usize) -> Result<Value> {
       let t: sqlx::types::time::Time = row.try_get(i).map_err(driver_err)?;
       Value::Timestamp(t.to_string())
     }
-    "NUMERIC" => match row.try_get::<BigDecimal, _>(i) {
-      Ok(d) => Value::Decimal(format_pg_numeric(&d)),
-      // `numeric` admits `NaN` / `±Infinity`, which `BigDecimal` can't hold, so
-      // its decode errors. Keep the honest marker for those rather than kill the
-      // whole row over an unrepresentable-but-valid value.
-      Err(_) => Value::Text(format!("<{}>", type_name.to_lowercase())),
-    },
+    "NUMERIC" => decode_pg_numeric(&raw, row, i),
     // Conservative non-data marker — honest about not decoding this type yet
     // (ranges, network types, …). Faithful decode of the common long tail
     // (numeric, arrays, enums) is #76. Never a faked value.
@@ -427,14 +421,44 @@ fn decode_pg_array(row: &PgRow, i: usize, elem_name: &str) -> Result<Value> {
   Ok(Value::Array(items))
 }
 
-/// Render a decoded PG `numeric` as its exact decimal text. sqlx's `BigDecimal`
-/// decode reconstructs the value from PG's base-10000 groups, so its scale is
-/// rounded **up to a multiple of 4** — `12.34` can come back `12.3400`. PG's
-/// real display scale (`dscale`) is not exposed, so trailing fractional zeros
-/// are trimmed: mathematically exact, no spurious padding, no scientific
-/// notation (`BigDecimal` never emits it). The one visible effect is that a
-/// declared trailing zero (`1.10`) reads `1.1` — unavoidable once `dscale` is
-/// gone, and harmless for a browse cell.
+/// Decode a PG `numeric` cell as `Value::Decimal`, preserving PG's display
+/// scale (`dscale`) — so `numeric(10,2)` `1.20` reads `1.20`, not `1.2`. sqlx's
+/// `BigDecimal` decode rounds the scale up to a multiple of 4 and drops
+/// `dscale`, so recover `dscale` from the wire value and `with_scale` back to
+/// it. `NaN` / `±Infinity` (which `BigDecimal` can't hold) keep the honest
+/// marker instead of erroring the row.
+fn decode_pg_numeric(raw: &PgValueRef, row: &PgRow, i: usize) -> Value {
+  let Ok(d) = row.try_get::<BigDecimal, _>(i) else {
+    return Value::Text("<numeric>".to_string());
+  };
+  let text = if raw.format() == PgValueFormat::Text {
+    // Text protocol: the bytes are already PG's exact decimal text.
+    raw
+      .as_bytes()
+      .ok()
+      .and_then(|b| std::str::from_utf8(b).ok())
+      .map(str::to_string)
+  } else {
+    // Binary numeric header is four `i16`s (big-endian): ndigits, weight, sign,
+    // dscale — so `dscale` is bytes `[6..8]`. `with_scale` truncates the
+    // multiple-of-4 padding (always ≥ dscale) back to the declared scale.
+    raw
+      .as_bytes()
+      .ok()
+      .and_then(|b| b.get(6..8).map(|s| i16::from_be_bytes([s[0], s[1]])))
+      .filter(|&scale| scale >= 0)
+      .map(|scale| d.with_scale(i64::from(scale)).to_string())
+  };
+  Value::Decimal(text.unwrap_or_else(|| format_pg_numeric(&d)))
+}
+
+/// Fallback numeric text when `dscale` can't be read (see [`decode_pg_numeric`]).
+/// sqlx's `BigDecimal` decode reconstructs the value from PG's base-10000
+/// groups, so its scale is rounded **up to a multiple of 4** — `12.34` can come
+/// back `12.3400`. Trim the trailing fractional zeros: mathematically exact, no
+/// spurious padding, no scientific notation (`BigDecimal` never emits it). The
+/// only effect is that a declared trailing zero (`1.10`) reads `1.1` — but this
+/// path is hit only when the primary `dscale`-preserving decode couldn't.
 fn format_pg_numeric(d: &BigDecimal) -> String {
   let s = d.to_string();
   if s.contains('.') {
