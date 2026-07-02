@@ -172,23 +172,61 @@ impl Config {
     })
   }
 
-  /// Read and parse a `.vellum.toml` at `path`. Real implementation lands in
-  /// the green step (#95).
-  pub fn load_path(path: &Path) -> Result<Config> {
-    let _ = path;
-    Ok(Config {
-      connections: BTreeMap::new(),
-      ui: Ui::default(),
-    })
+  /// Discover and load `.vellum.toml` from the standard locations: the current
+  /// directory (`./.vellum.toml`, a project-local override) first, then the
+  /// global config dir (`<config>/vellum/.vellum.toml`). The first that exists
+  /// is parsed; none found is a [`VellumError::Config`] pointing at how to
+  /// create one.
+  pub fn load() -> Result<Config> {
+    Self::load_discovered(&config_candidates(), |path| path.exists())
   }
 
-  /// Load the first `candidates` entry that `exists`, or a config error naming
-  /// where it looked. Real implementation lands in the green step (#95).
-  pub fn load_discovered(candidates: &[PathBuf], exists: impl Fn(&Path) -> bool) -> Result<Config> {
-    let _ = (candidates, exists);
-    Ok(Config {
-      connections: BTreeMap::new(),
-      ui: Ui::default(),
-    })
+  /// Read and parse the `.vellum.toml` at `path`. A missing or unreadable file
+  /// is a [`VellumError::Config`] naming the path — never the file contents, so
+  /// a secret mistakenly placed in it can't surface in the error.
+  pub fn load_path(path: &Path) -> Result<Config> {
+    let text = std::fs::read_to_string(path)
+      .map_err(|e| VellumError::Config(format!("could not read `{}`: {e}", path.display())))?;
+    Config::from_toml_str(&text)
   }
+
+  /// Load the first of `candidates` for which `exists` returns true, parsing it
+  /// via [`Config::load_path`]. When none exists, a [`VellumError::Config`]
+  /// names where it looked and points at `vellum connect`. `exists` is injected
+  /// so the precedence is testable without depending on the real filesystem.
+  pub fn load_discovered(candidates: &[PathBuf], exists: impl Fn(&Path) -> bool) -> Result<Config> {
+    match candidates.iter().find(|path| exists(path)) {
+      Some(path) => Self::load_path(path),
+      None => Err(VellumError::Config(format!(
+        "no `.vellum.toml` found (looked in {}) — create one or run `vellum connect <name>` to register a connection",
+        render_candidates(candidates)
+      ))),
+    }
+  }
+}
+
+/// The ordered `.vellum.toml` search path: the current directory first (a
+/// project-local override), then the global config dir via `dirs`
+/// (`~/.config/vellum/.vellum.toml` on Linux, the platform equivalent
+/// elsewhere). A platform with no resolvable config dir simply drops the global
+/// candidate — cwd still works.
+fn config_candidates() -> Vec<PathBuf> {
+  let mut candidates = vec![PathBuf::from(".vellum.toml")];
+  if let Some(dir) = dirs::config_dir() {
+    candidates.push(dir.join("vellum").join(".vellum.toml"));
+  }
+  candidates
+}
+
+/// Render the candidate paths for the "not found" message: a comma-separated
+/// list of quoted paths (or a plain note when there are none).
+fn render_candidates(candidates: &[PathBuf]) -> String {
+  if candidates.is_empty() {
+    return "no candidate paths".to_string();
+  }
+  candidates
+    .iter()
+    .map(|path| format!("`{}`", path.display()))
+    .collect::<Vec<_>>()
+    .join(", ")
 }

@@ -110,6 +110,11 @@ unicode-width = "0.2"
 # and mis-route the connection. Already in the tree via `sqlx → url`; pinned as
 # a direct dep so the builder doesn't lean on a transitive.
 percent-encoding = "2"
+# XDG / platform config discovery (#95). `Config::load` looks for `.vellum.toml`
+# in the cwd then the global config dir (`~/.config/vellum/` on Linux, the
+# platform equivalent elsewhere) — `dirs` resolves the latter portably. The
+# roadmap's chosen path crate (ARCHITECTURE §stack, "gwm ✓").
+dirs = "6"
 
 # OS keyring backend for the `SecretStore` port (#72). keyring 3.x makes the
 # platform backend non-default, so it is selected per-OS: macOS Keychain,
