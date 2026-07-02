@@ -3,11 +3,11 @@ name = "vellum"
 version = "0.1.0"
 edition = "2021"
 # MSRV is the floor required by every use in the crate — and by the dep tree.
-# ratatui 0.30 (with ratatui-core / -widgets / -crossterm, darling,
-# instability, time) declares rust-version 1.88, so the TUI stack sets the
-# floor here. CI's clippy MSRV lint (`clippy::incompatible_msrv`) enforces it
-# against `@stable`.
-rust-version = "1.88"
+# sqlx 0.9 (sqlx-core / -postgres / -mysql / -sqlite) declares rust-version
+# 1.94, the highest in the tree, so the SQL stack now sets the floor (was 1.88,
+# set by ratatui 0.30). CI's clippy MSRV lint (`clippy::incompatible_msrv`)
+# enforces it against `@stable`.
+rust-version = "1.94"
 description = "TUI SQL client — browse, query, edit databases with a GitHub-like diff, in the terminal"
 authors = ["Kylian Bardini"]
 license = "MIT"
@@ -72,15 +72,18 @@ async-trait = "0.1"
 # decode so the read paths map those into the existing `Value` variants; the
 # long tail (numeric, arrays, enums) hits a conservative non-data marker (#76).
 # `default-features = false` skips the unused macros / migrate features. NOTE:
-# the `mysql` driver pulls `rsa` (RUSTSEC-2023-0071, Marvin attack, no upstream
-# fix) for `caching_sha2_password` auth — now a real compiled dep, not the #10
-# phantom. The audit job is informational (continue-on-error).
-sqlx = { version = "0.8", default-features = false, features = [
+# sqlx 0.9 split RSA auth out of `mysql` into the opt-in `mysql-rsa` feature; we
+# enable it so a non-TLS MySQL/MariaDB connection using `caching_sha2_password`
+# / `sha256_password` (MySQL 8's default) still authenticates — as it did on 0.8.
+# It pulls `rsa` (RUSTSEC-2023-0071, Marvin attack, no upstream fix), a real
+# compiled dep; the audit job is informational (continue-on-error).
+sqlx = { version = "0.9", default-features = false, features = [
   "runtime-tokio",
   "tls-rustls",
   "sqlite",
   "postgres",
   "mysql",
+  "mysql-rsa",
   "uuid",
   "json",
   "time",
@@ -91,12 +94,13 @@ sqlx = { version = "0.8", default-features = false, features = [
 # `default-features = false` drops the `recursive-protection` feature (the
 # `recursive → stacker → psm → ar_archive_writer` chain). Trade-off:
 # deeply-nested SQL is not guarded against parser stack overflow — acceptable
-# for local, user-supplied input. Its 1.88 floor now fits our MSRV, so
+# for local, user-supplied input. Its 1.88 floor sits below our MSRV, so
 # re-enabling it is a possible follow-up; kept off here to hold the tree lean.
 sqlparser = { version = "0.62", default-features = false, features = ["std"] }
 # Terminal UI: the result table, vim navigation, and (later) the diff view all
-# render through ratatui (crossterm is its default backend). ratatui 0.30 sets
-# the crate's 1.88 MSRV (see `rust-version` above).
+# render through ratatui (crossterm is its default backend). ratatui 0.30
+# declares rust-version 1.88 — below the crate MSRV now set by sqlx 0.9 (see
+# `rust-version` above).
 ratatui = "0.30"
 # Terminal display width of a string. The header/status builders pad and
 # truncate the chrome by cell width, not `char` count, so a CJK/emoji database

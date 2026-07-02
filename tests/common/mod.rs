@@ -12,7 +12,7 @@ use tempfile::NamedTempFile;
 /// if missing), then close the connection. Opens via `.filename(path)` rather
 /// than a `sqlite:` DSN, so any path — including one with URL-structural
 /// characters like `?` or `%` — is opened literally.
-pub fn seed_sql(path: &Path, statements: &[&str]) {
+pub fn seed_sql(path: &Path, statements: &[&'static str]) {
   // These e2e tests are sync (they spawn the binary); seed on a one-off
   // current-thread runtime.
   let rt = tokio::runtime::Builder::new_current_thread()
