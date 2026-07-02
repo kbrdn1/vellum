@@ -4,10 +4,12 @@
 //! asserts that rendering succeeds and surfaces content — not exact pixels.
 
 use ratatui::backend::TestBackend;
+use ratatui::buffer::Buffer;
 use ratatui::Terminal;
 
 use vellum::model::{Backend, Column, QueryResult, TypeKind, Value};
 use vellum::tui::app::App;
+use vellum::tui::theme::Theme;
 use vellum::tui::view;
 
 /// A `cols`×`rows` app, cells holding `v{row}_{col}` text so we can assert a
@@ -140,14 +142,15 @@ fn browse_colours_the_focused_pane_border() {
   let buf = terminal.backend().buffer();
   // Row 1 (below the header) holds both panes' top borders: the sidebar's left
   // corner at col 0, the table's at the sidebar width (28).
+  let theme = Theme::default();
   let sidebar_border = buf[(0, 1)].fg;
   let table_border = buf[(28, 1)].fg;
   assert_ne!(sidebar_border, table_border, "focused vs idle border differ in colour");
   assert_eq!(
-    sidebar_border,
-    Color::Cyan,
-    "the focused (sidebar) border is the accent"
+    sidebar_border, theme.focus,
+    "the focused (sidebar) border is the focus role"
   );
+  assert_eq!(table_border, theme.muted, "the idle (table) border is muted");
 }
 
 /// Open `users` and feed it a two-row page — the shared setup for the browse
@@ -301,14 +304,15 @@ fn schema_view_app() -> App {
 }
 
 #[test]
-fn browse_sidebar_colours_schemas_yellow_and_views_magenta() {
+fn browse_sidebar_colours_schemas_and_views_from_the_theme() {
   let app = schema_view_app();
+  let theme = Theme::default();
   let mut terminal = Terminal::new(TestBackend::new(90, 16)).unwrap();
   terminal.draw(|f| view::render(f, &app)).unwrap();
   let buf = terminal.backend().buffer();
   let any_fg = |c: Color| (0..buf.area.height).any(|y| (0..buf.area.width).any(|x| buf[(x, y)].fg == c));
-  assert!(any_fg(Color::Yellow), "a schema node is coloured yellow");
-  assert!(any_fg(Color::Magenta), "a view node is coloured magenta");
+  assert!(any_fg(theme.schema), "a schema node is coloured with the schema role");
+  assert!(any_fg(theme.view), "a view node is coloured with the view role");
 }
 
 #[test]
@@ -488,6 +492,159 @@ fn browse_renders_an_unopened_table_pane_without_panicking() {
   let _ = render_to_string(&browse_app(), 80, 12);
 }
 
+// ── Theme-driven grid readability (#92) ────────────────────────────────────
+
+/// Render into an off-screen buffer and hand back a clone, so tests can index
+/// `buf[(x, y)]` for colour/alignment assertions without borrowing the terminal.
+fn render_buffer(app: &App, w: u16, h: u16) -> Buffer {
+  let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
+  terminal.draw(|f| view::render(f, app)).unwrap();
+  terminal.backend().buffer().clone()
+}
+
+/// Locate the first cell (scanning left-to-right, top-to-bottom) whose column
+/// is `>= x0` and whose row of symbols contains `needle`, returning the
+/// `(x, y)` of the needle's first char. Constrained to `x0` so a match in the
+/// ASCII table pane isn't thrown off by multibyte glyphs in the sidebar.
+fn locate(buf: &Buffer, needle: &str, x0: u16) -> Option<(u16, u16)> {
+  for y in 0..buf.area.height {
+    let row: String = (x0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect();
+    if let Some(byte) = row.find(needle) {
+      let col = row[..byte].chars().count() as u16;
+      return Some((x0 + col, y));
+    }
+  }
+  None
+}
+
+/// Open `users` and feed it `result` — the shared setup for the grid tests. The
+/// displayed query carries no digits/letters that would clash with the fixture
+/// values the tests scan for.
+fn opened_with(result: QueryResult) -> App {
+  let mut app = browse_app();
+  app.on_key(' '); // expand db
+  app.on_key('j'); // onto users
+  app.on_key('\n'); // open it
+  app.take_page_target(); // drain the open (the runtime would fetch)
+  app.set_displayed_query("SELECT * FROM t".into());
+  app.apply_page(result);
+  app
+}
+
+#[test]
+fn browse_grid_selected_row_uses_selection_bg_not_reverse() {
+  // The selected row is painted with `selection_bg`, NOT a full-row reverse: the
+  // row text keeps its own foreground (legible), only the background changes.
+  let theme = Theme::default();
+  let app = opened_with(QueryResult {
+    columns: vec![Column {
+      name: "name".into(),
+      kind: TypeKind::Text,
+    }],
+    rows: vec![vec![Value::Text("alpha".into())], vec![Value::Text("bravo".into())]],
+    affected: None,
+  });
+  let buf = render_buffer(&app, 80, 14);
+  // Cursor starts on row 0 -> "alpha" is selected, "bravo" is not.
+  let (sx, sy) = locate(&buf, "alpha", 28).expect("selected value rendered");
+  let (ux, uy) = locate(&buf, "bravo", 28).expect("unselected value rendered");
+  assert_eq!(
+    buf[(sx, sy)].bg,
+    theme.selection_bg,
+    "selected row painted with selection_bg"
+  );
+  assert_ne!(
+    buf[(ux, uy)].bg,
+    theme.selection_bg,
+    "unselected row keeps the default bg"
+  );
+  // Same fg on both rows proves there is no reverse-swap on the selection.
+  assert_eq!(
+    buf[(sx, sy)].fg,
+    buf[(ux, uy)].fg,
+    "selected and unselected cells share the same foreground (no reverse)"
+  );
+}
+
+#[test]
+fn browse_sidebar_selected_row_uses_selection_bg() {
+  // The sidebar selection is `selection_bg` too, not a reverse bar. The cursor
+  // row (marked by `▶`) carries the surface fill across its width.
+  let theme = Theme::default();
+  let mut app = browse_app(); // focus on the sidebar, cursor on the db node
+  app.on_key(' '); // expand the db (cursor stays on the db row)
+  let buf = render_buffer(&app, 80, 12);
+  let (_, cy) = locate(&buf, "▶", 0).expect("the cursor row is marked");
+  let painted = (0..28).any(|x| buf[(x, cy)].bg == theme.selection_bg);
+  assert!(painted, "the selected sidebar row is painted with selection_bg");
+}
+
+#[test]
+fn browse_grid_renders_null_on_muted() {
+  // A `NULL` cell reads as absent, not as a real value: it is dimmed onto the
+  // muted role rather than sharing the primary text colour.
+  let theme = Theme::default();
+  let app = opened_with(QueryResult {
+    columns: vec![Column {
+      name: "note".into(),
+      kind: TypeKind::Text,
+    }],
+    rows: vec![vec![Value::Null]],
+    affected: None,
+  });
+  let buf = render_buffer(&app, 80, 14);
+  let (nx, ny) = locate(&buf, "NULL", 28).expect("NULL rendered");
+  assert_eq!(buf[(nx, ny)].fg, theme.muted, "NULL is dimmed onto the muted role");
+}
+
+#[test]
+fn browse_grid_right_aligns_numeric_columns() {
+  // Numeric columns hug the right edge so decimals line up. With a header wider
+  // than the value, right-alignment shows as left-padding: the value's last
+  // char sits at the column's rightmost cell, the leftmost cell is a space.
+  let app = opened_with(QueryResult {
+    columns: vec![Column {
+      name: "count".into(), // 5 cells wide, wider than "1"
+      kind: TypeKind::Int,
+    }],
+    rows: vec![vec![Value::Int(1)]],
+    affected: None,
+  });
+  let buf = render_buffer(&app, 80, 14);
+  let (hx, hy) = locate(&buf, "count", 28).expect("numeric header rendered");
+  let value_row = hy + 1;
+  assert_eq!(buf[(hx + 4, value_row)].symbol(), "1", "the value hugs the right edge");
+  assert_eq!(
+    buf[(hx, value_row)].symbol(),
+    " ",
+    "the column is left-padded (right-aligned)"
+  );
+}
+
+#[test]
+fn browse_grid_header_row_uses_the_accent() {
+  // The header row detaches from the data on the accent (bold), not just a plain
+  // bold on the default fg. Scan the table pane's grid region (below the top
+  // border, above the status line) for an accent+bold cell — the header.
+  let theme = Theme::default();
+  let app = opened_with(QueryResult {
+    columns: vec![Column {
+      name: "name".into(),
+      kind: TypeKind::Text,
+    }],
+    rows: vec![vec![Value::Text("alpha".into())]],
+    affected: None,
+  });
+  let buf = render_buffer(&app, 80, 14);
+  let header_accent = (2..buf.area.height - 1).any(|y| {
+    (28..buf.area.width).any(|x| {
+      let c = &buf[(x, y)];
+      c.fg == theme.accent && c.modifier.contains(ratatui::style::Modifier::BOLD)
+    })
+  });
+  assert!(header_accent, "the grid header row is drawn on the accent (bold)");
+}
+
 // ── Pure line/counter builders (#86, gwm-style — no ratatui backend) ───────
 
 use ratatui::style::{Color, Modifier};
@@ -531,8 +688,8 @@ fn header_line_badges_the_engine_with_a_background_colour() {
     .expect("engine badge span");
   assert_eq!(
     badge.style.bg,
-    Some(Color::Blue),
-    "the engine label is a coloured badge"
+    Some(Theme::default().accent),
+    "the engine label is a coloured badge on the accent"
   );
 }
 
@@ -620,8 +777,8 @@ fn status_line_badges_the_context_with_a_background_colour() {
     .expect("context span");
   assert_eq!(
     ctx_span.style.bg,
-    Some(Color::Cyan),
-    "the context breadcrumb is a coloured badge"
+    Some(Theme::default().accent),
+    "the context breadcrumb is a coloured badge on the accent"
   );
 }
 
@@ -720,7 +877,7 @@ fn status_line_colours_the_log_message() {
     .expect("a log span");
   assert_eq!(
     log.style.fg,
-    Some(Color::Red),
+    Some(Theme::default().error),
     "the log reads as an error: {:?}",
     log.style
   );

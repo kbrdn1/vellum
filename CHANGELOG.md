@@ -276,6 +276,19 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Browse TUI adopts a claude-dark theme by default + a readability pass
+  (#92):** the render path now reads every colour from a role-based `Theme`
+  (`src/tui/theme.rs`) instead of hard-coding ratatui base colours, and ships
+  the Anthropic orange **claude-dark** palette as the default (ported from
+  gwm's `claude_dark()`). The selected row — grid and sidebar — is a
+  `selection_bg` surface fill rather than a harsh full-row reverse: the text
+  keeps its own foreground and a single left cursor marks the row (no doubled
+  `>>` over an inverted bar). The data grid reads far calmer: `NULL` renders
+  muted (not like a real value), numeric columns right-align so decimals line
+  up, and the header row sits on the accent (bold) so it detaches from the
+  data. Focus is now an unmistakable colour diff — a focus-orange border on the
+  active pane, muted on the idle one. A configurable `[theme]` block in
+  `.vellum.toml` is a deliberate follow-up; this ships the default first.
 - **MSRV raised to 1.88** (was 1.86): ratatui 0.30 — the Phase 0 TUI stack —
   declares rust-version 1.88, so the crate floor follows. The README badge and
   the CONTRIBUTING prerequisite are updated to match; CI enforces it via

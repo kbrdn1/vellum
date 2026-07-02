@@ -7,6 +7,7 @@
 pub mod app;
 pub mod runtime;
 pub mod state;
+pub mod theme;
 pub mod view;
 
 pub use runtime::{browse, run};
