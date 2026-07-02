@@ -10,10 +10,10 @@
 use std::str::FromStr;
 
 use async_trait::async_trait;
-use sqlx::postgres::{PgConnectOptions, PgPool, PgPoolOptions, PgRow};
+use sqlx::postgres::{PgColumn, PgConnectOptions, PgPool, PgPoolOptions, PgRow};
 // Trait methods imported anonymously to avoid colliding with the domain
 // `Column` / `Row` types.
-use sqlx::{Column as _, Row as _, TypeInfo as _, ValueRef as _};
+use sqlx::{Column as _, Executor as _, Row as _, TypeInfo as _, ValueRef as _};
 
 use sqlparser::dialect::PostgreSqlDialect;
 
@@ -84,19 +84,14 @@ impl Driver for PostgresDriver {
     }
 
     // PG reports column types reliably (unlike SQLite literals), so the header
-    // kind comes straight from the column's type. Headers for an *empty*
-    // result (no row metadata without a `describe` round-trip) land with the
-    // PG browse consumer (#15) — no caller needs them in #10.
+    // kind comes straight from the column's type. An *empty* result carries no
+    // row metadata, so its headers come from the statement's `describe` — an
+    // empty relation (e.g. a freshly-created table over `--conn` browse) still
+    // renders its columns and stays sortable (#97). `describe` prepares the
+    // statement without executing it, so it is safe on the read path.
     let columns = match raw_rows.first() {
-      Some(meta) => meta
-        .columns()
-        .iter()
-        .map(|c| Column {
-          name: c.name().to_string(),
-          kind: typekind_from_pg(c.type_info().name()),
-        })
-        .collect(),
-      None => Vec::new(),
+      Some(meta) => columns_from(meta.columns()),
+      None => columns_from((&self.pool).describe(sql).await.map_err(driver_err)?.columns()),
     };
 
     // `affected` is owned by the write path (a later, sacred phase); a read
@@ -361,6 +356,19 @@ fn pg_value_at(row: &PgRow, i: usize) -> Result<Value> {
     _ => Value::Text(format!("<{}>", type_name.to_lowercase())),
   };
   Ok(value)
+}
+
+/// Build the domain column headers from a slice of PG columns — shared by the
+/// row-metadata path (a non-empty result) and the `describe` path (an empty
+/// one, #97) so both spell the header identically.
+fn columns_from(cols: &[PgColumn]) -> Vec<Column> {
+  cols
+    .iter()
+    .map(|c| Column {
+      name: c.name().to_string(),
+      kind: typekind_from_pg(c.type_info().name()),
+    })
+    .collect()
 }
 
 /// Map a PG type name to a column-header `TypeKind`. The conservative long tail

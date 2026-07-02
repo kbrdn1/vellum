@@ -612,6 +612,32 @@ mod postgres_it {
   }
 
   #[tokio::test]
+  async fn pg_empty_table_still_reports_columns() {
+    // #97: browsing an empty relation over `--conn` must still render headers.
+    // With zero rows there is no row metadata, so the columns have to come from
+    // the statement's `describe` — else the grid is schema-less and unsortable
+    // even though the catalog knows the columns.
+    let pool = seed_pool().await;
+    pool.execute("drop table if exists it_empty_cols").await.expect("drop");
+    pool
+      .execute("create table it_empty_cols (id int, label text)")
+      .await
+      .expect("create table");
+
+    let driver = PostgresDriver::connect(&dsn()).await.expect("connect read-only");
+    let result = driver
+      .query("select * from it_empty_cols")
+      .await
+      .expect("query empty table");
+    assert!(result.rows.is_empty(), "the seeded table has no rows");
+    assert_eq!(
+      result.columns.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(),
+      ["id", "label"],
+      "an empty result must still carry its column headers"
+    );
+  }
+
+  #[tokio::test]
   async fn pg_query_refuses_a_data_modifying_cte() {
     // THE write-path guard for PG: a data-modifying CTE parses as a single
     // top-level `SELECT` (the sqlparser guard waves it through) but it WRITES.
@@ -946,6 +972,31 @@ mod mysql_it {
       matches!(&row[9], Value::Timestamp(s) if s.contains("2024")),
       "datetime → Timestamp, got {:?}",
       row[9]
+    );
+  }
+
+  #[tokio::test]
+  async fn mysql_empty_table_still_reports_columns() {
+    // #97: same as the PG case — an empty relation over `--conn` must still
+    // render its headers. With no rows the columns come from the statement's
+    // `describe`, not `raw_rows.first()`.
+    let pool = seed_pool().await;
+    pool.execute("drop table if exists it_empty_cols").await.expect("drop");
+    pool
+      .execute("create table it_empty_cols (id int, label varchar(50))")
+      .await
+      .expect("create table");
+
+    let driver = MySqlDriver::connect(&dsn()).await.expect("connect read-only");
+    let result = driver
+      .query("select * from it_empty_cols")
+      .await
+      .expect("query empty table");
+    assert!(result.rows.is_empty(), "the seeded table has no rows");
+    assert_eq!(
+      result.columns.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(),
+      ["id", "label"],
+      "an empty result must still carry its column headers"
     );
   }
 
