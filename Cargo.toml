@@ -75,7 +75,7 @@ async-trait = "0.1"
 # the `mysql` driver pulls `rsa` (RUSTSEC-2023-0071, Marvin attack, no upstream
 # fix) for `caching_sha2_password` auth — now a real compiled dep, not the #10
 # phantom. The audit job is informational (continue-on-error).
-sqlx = { version = "0.8", default-features = false, features = [
+sqlx = { version = "0.9", default-features = false, features = [
   "runtime-tokio",
   "tls-rustls",
   "sqlite",
