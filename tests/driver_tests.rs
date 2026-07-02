@@ -532,7 +532,7 @@ mod postgres_it {
   use sqlx::{Executor as _, PgPool};
   use vellum::driver::{Capabilities, Driver, PostgresDriver};
   use vellum::model::catalog::RelationKind;
-  use vellum::model::{Backend, Value};
+  use vellum::model::{Backend, TypeKind, Value};
 
   /// The PG DSN — from `VELLUM_IT_PG_DSN`, or a standard local default so the
   /// CI `it-db` job (service on `localhost:5432`) needs no extra env.
@@ -667,6 +667,11 @@ mod postgres_it {
       Value::Text("<numeric>".into()),
       "NaN falls back to the marker, not a crash"
     );
+    assert_eq!(
+      result.columns[0].kind,
+      TypeKind::Decimal,
+      "the numeric column header kind must report Decimal, not Text"
+    );
   }
 
   #[tokio::test]
@@ -678,17 +683,19 @@ mod postgres_it {
     let pool = seed_pool().await;
     pool.execute("drop table if exists it_arrays").await.expect("drop");
     pool
-      .execute("create table it_arrays (ints int4[], tags text[], with_null int4[], ranges int4range[])")
+      .execute("create table it_arrays (ints int4[], tags text[], with_null int4[], ranges int4range[], grid int4[][])")
       .await
       .expect("create table");
     pool
-      .execute("insert into it_arrays values ('{1,2,3}', '{a,b}', '{1,NULL,3}', array['[1,2)'::int4range])")
+      .execute(
+        "insert into it_arrays values ('{1,2,3}', '{a,b}', '{1,NULL,3}', array['[1,2)'::int4range], '{{1,2},{3,4}}')",
+      )
       .await
       .expect("seed row");
 
     let driver = PostgresDriver::connect(&dsn()).await.expect("connect read-only");
     let result = driver
-      .query("select ints, tags, with_null, ranges from it_arrays")
+      .query("select ints, tags, with_null, ranges, grid from it_arrays")
       .await
       .expect("query");
     let row = &result.rows[0];
@@ -711,6 +718,18 @@ mod postgres_it {
       row[3],
       Value::Text("<int4range[]>".into()),
       "an unsupported element type keeps the honest array marker"
+    );
+    // A multi-dimensional array — sqlx's `Vec<T>` decoder rejects it. It must
+    // fall back to the marker, never fail the whole query.
+    assert_eq!(
+      row[4],
+      Value::Text("<int4[]>".into()),
+      "a 2-D array falls back to the marker instead of erroring the query"
+    );
+    assert_eq!(
+      result.columns[0].kind,
+      TypeKind::Array,
+      "the array column header kind must report Array, not Text"
     );
   }
 

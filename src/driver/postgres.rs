@@ -401,12 +401,16 @@ fn decode_pg_array(row: &PgRow, i: usize, elem_name: &str) -> Result<Value> {
   // (a NULL element → `Value::Null`).
   macro_rules! decode {
     ($ty:ty, $map:expr) => {
-      row
-        .try_get::<Vec<Option<$ty>>, _>(i)
-        .map_err(driver_err)?
-        .into_iter()
-        .map(|cell| cell.map_or(Value::Null, $map))
-        .collect::<Vec<Value>>()
+      match row.try_get::<Vec<Option<$ty>>, _>(i) {
+        Ok(v) => v
+          .into_iter()
+          .map(|cell| cell.map_or(Value::Null, $map))
+          .collect::<Vec<Value>>(),
+        // A valid-but-unsupported shape (multi-dimensional array, non-1 lower
+        // bound) — sqlx's `Vec<T>` decoder rejects it. Fall back to the marker
+        // rather than fail the whole query; the pre-#76 behaviour never errored.
+        Err(_) => return Ok(Value::Text(format!("<{}[]>", elem_name.to_lowercase()))),
+      }
     };
   }
   let items = match elem_name {
@@ -457,10 +461,16 @@ fn columns_from(cols: &[PgColumn]) -> Vec<Column> {
 /// Map a PG type name to a column-header `TypeKind`. The conservative long tail
 /// (#76) reports `Text` — the marker's own kind.
 fn typekind_from_pg(name: &str) -> TypeKind {
+  // Array types report `INT4[]`, `TEXT[]`, … — one `Array` header regardless of
+  // element type (mirrors `Value::Array`, even when a cell fell back to a marker).
+  if name.ends_with("[]") {
+    return TypeKind::Array;
+  }
   match name {
     "BOOL" => TypeKind::Bool,
     "INT2" | "INT4" | "INT8" => TypeKind::Int,
     "FLOAT4" | "FLOAT8" => TypeKind::Float,
+    "NUMERIC" => TypeKind::Decimal,
     "TEXT" | "VARCHAR" | "BPCHAR" | "NAME" | "UUID" => TypeKind::Text,
     "BYTEA" => TypeKind::Bytes,
     "JSON" | "JSONB" => TypeKind::Json,
