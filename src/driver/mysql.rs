@@ -16,7 +16,9 @@ use async_trait::async_trait;
 use sqlx::mysql::{MySqlColumn, MySqlConnectOptions, MySqlPool, MySqlPoolOptions, MySqlRow};
 // Trait methods imported anonymously to avoid colliding with the domain
 // `Column` / `Row` types.
-use sqlx::{Column as _, Executor as _, Row as _, TypeInfo as _, ValueRef as _};
+use sqlx::{
+  AssertSqlSafe, Column as _, Executor as _, Row as _, SqlSafeStr as _, Statement as _, TypeInfo as _, ValueRef as _,
+};
 
 use sqlparser::dialect::MySqlDialect;
 
@@ -204,7 +206,10 @@ impl Driver for MySqlDriver {
     // then the session read-only backstop (autocommit → each statement is a
     // READ ONLY transaction).
     ensure_single_read_query(&MySqlDialect {}, sql)?;
-    let raw_rows = sqlx::query(sql).fetch_all(&self.pool).await.map_err(driver_err)?;
+    let raw_rows = sqlx::query(AssertSqlSafe(sql))
+      .fetch_all(&self.pool)
+      .await
+      .map_err(driver_err)?;
 
     let mut rows: Vec<Row> = Vec::with_capacity(raw_rows.len());
     for raw in &raw_rows {
@@ -217,12 +222,18 @@ impl Driver for MySqlDriver {
 
     // MySQL reports column types reliably; the header kind comes from the
     // column type. An *empty* result carries no row metadata, so its headers
-    // come from the statement's `describe` — an empty relation still renders its
-    // columns and stays sortable (#97). `describe` prepares without executing,
-    // so it is safe on the read path.
+    // come from the prepared statement's column metadata — an empty relation
+    // still renders its columns and stays sortable (#97). `prepare` inspects the
+    // statement without executing it, so it is safe on the read path.
     let columns = match raw_rows.first() {
       Some(meta) => columns_from(meta.columns()),
-      None => columns_from((&self.pool).describe(sql).await.map_err(driver_err)?.columns()),
+      None => {
+        let stmt = (&self.pool)
+          .prepare(AssertSqlSafe(sql).into_sql_str())
+          .await
+          .map_err(driver_err)?;
+        columns_from(stmt.columns())
+      }
     };
 
     Ok(QueryResult {

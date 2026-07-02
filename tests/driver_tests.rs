@@ -1064,8 +1064,15 @@ mod mysql_it {
     .await;
 
     // Restore the global flag ALWAYS, before unwrapping the captured result.
+    // The flag is 0/1, so branch to a `&'static str` — sqlx 0.9's raw `execute`
+    // only takes static SQL, and `SET GLOBAL` can't go through the prepared
+    // (`sqlx::query`) path anyway (MySQL error 1295).
     pool
-      .execute(format!("set global log_bin_trust_function_creators = {original_trust}").as_str())
+      .execute(if original_trust == 1 {
+        "set global log_bin_trust_function_creators = 1"
+      } else {
+        "set global log_bin_trust_function_creators = 0"
+      })
       .await
       .expect("restore the trust flag");
 

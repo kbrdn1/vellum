@@ -13,7 +13,9 @@ use async_trait::async_trait;
 use sqlx::postgres::{PgColumn, PgConnectOptions, PgPool, PgPoolOptions, PgRow};
 // Trait methods imported anonymously to avoid colliding with the domain
 // `Column` / `Row` types.
-use sqlx::{Column as _, Executor as _, Row as _, TypeInfo as _, ValueRef as _};
+use sqlx::{
+  AssertSqlSafe, Column as _, Executor as _, Row as _, SqlSafeStr as _, Statement as _, TypeInfo as _, ValueRef as _,
+};
 
 use sqlparser::dialect::PostgreSqlDialect;
 
@@ -69,7 +71,10 @@ impl Driver for PostgresDriver {
       .execute(&mut *tx)
       .await
       .map_err(driver_err)?;
-    let raw_rows = sqlx::query(sql).fetch_all(&mut *tx).await.map_err(driver_err)?;
+    let raw_rows = sqlx::query(AssertSqlSafe(sql))
+      .fetch_all(&mut *tx)
+      .await
+      .map_err(driver_err)?;
     // Read-only: nothing to commit. Rollback closes the transaction (and would
     // discard a write, if the layers above ever let one through).
     tx.rollback().await.map_err(driver_err)?;
@@ -85,13 +90,20 @@ impl Driver for PostgresDriver {
 
     // PG reports column types reliably (unlike SQLite literals), so the header
     // kind comes straight from the column's type. An *empty* result carries no
-    // row metadata, so its headers come from the statement's `describe` — an
-    // empty relation (e.g. a freshly-created table over `--conn` browse) still
-    // renders its columns and stays sortable (#97). `describe` prepares the
-    // statement without executing it, so it is safe on the read path.
+    // row metadata, so its headers come from the prepared statement's column
+    // metadata — an empty relation (e.g. a freshly-created table over `--conn`
+    // browse) still renders its columns and stays sortable (#97). `prepare`
+    // inspects the statement without executing it, so it is safe on the read
+    // path.
     let columns = match raw_rows.first() {
       Some(meta) => columns_from(meta.columns()),
-      None => columns_from((&self.pool).describe(sql).await.map_err(driver_err)?.columns()),
+      None => {
+        let stmt = (&self.pool)
+          .prepare(AssertSqlSafe(sql).into_sql_str())
+          .await
+          .map_err(driver_err)?;
+        columns_from(stmt.columns())
+      }
     };
 
     // `affected` is owned by the write path (a later, sacred phase); a read

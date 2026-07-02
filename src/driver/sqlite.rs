@@ -9,7 +9,9 @@ use async_trait::async_trait;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteConnection, SqlitePool, SqliteRow};
 // Trait methods are imported anonymously to avoid colliding with the domain
 // `Column` / `Row` types.
-use sqlx::{Column as _, Executor as _, Row as _, TypeInfo as _, ValueRef as _};
+use sqlx::{
+  AssertSqlSafe, Column as _, Executor as _, Row as _, SqlSafeStr as _, Statement as _, TypeInfo as _, ValueRef as _,
+};
 
 use sqlparser::dialect::SQLiteDialect;
 
@@ -212,7 +214,10 @@ impl Driver for SqliteDriver {
     // SQLite has no data-modifying CTEs, so the single-`Query` parser guard is
     // exact here; the read-only file handle (`connect`) is the backstop.
     ensure_single_read_query(&SQLiteDialect {}, sql)?;
-    let raw_rows = sqlx::query(sql).fetch_all(&self.pool).await.map_err(driver_err)?;
+    let raw_rows = sqlx::query(AssertSqlSafe(sql))
+      .fetch_all(&self.pool)
+      .await
+      .map_err(driver_err)?;
 
     // Map every cell first — the runtime value type is the single reliable
     // source of type info (SQLite reports no decltype for literal columns).
@@ -256,27 +261,34 @@ impl Driver for SqliteDriver {
 }
 
 impl SqliteDriver {
-  /// Build the result columns. Names come from the row metadata (or `describe`
-  /// for an empty result). A column's kind is the first **non-null** cell's
-  /// runtime type — a nullable column's first row is often NULL, so reading
-  /// row 0 alone is wrong. Columns with no non-null cell (and empty results)
-  /// fall back to the declared affinity via `describe`.
+  /// Build the result columns. Names come from the row metadata (or the
+  /// prepared statement for an empty result). A column's kind is the first
+  /// **non-null** cell's runtime type — a nullable column's first row is often
+  /// NULL, so reading row 0 alone is wrong. Columns with no non-null cell (and
+  /// empty results) fall back to the declared affinity from the prepared
+  /// statement's column metadata.
   async fn columns_for(&self, sql: &str, raw_rows: &[SqliteRow], rows: &[Row]) -> Result<Vec<Column>> {
     let runtime: Vec<Option<TypeKind>> = match raw_rows.first() {
       Some(meta) => (0..meta.len()).map(|i| first_non_null_kind(rows, i)).collect(),
       None => Vec::new(),
     };
-    // Only describe when a declared affinity is actually needed — an empty
-    // result, or a column that is entirely NULL.
-    let described = if raw_rows.is_empty() || runtime.iter().any(Option::is_none) {
-      Some((&self.pool).describe(sql).await.map_err(driver_err)?)
+    // Only prepare when a declared affinity is actually needed — an empty
+    // result, or a column that is entirely NULL. `prepare` inspects the
+    // statement's metadata without executing it (safe on the read path).
+    let prepared = if raw_rows.is_empty() || runtime.iter().any(Option::is_none) {
+      Some(
+        (&self.pool)
+          .prepare(AssertSqlSafe(sql).into_sql_str())
+          .await
+          .map_err(driver_err)?,
+      )
     } else {
       None
     };
     let affinity = |i: usize| {
-      described
+      prepared
         .as_ref()
-        .and_then(|d| d.columns().get(i))
+        .and_then(|p| p.columns().get(i))
         .map_or(TypeKind::Null, |c| typekind_from_class(c.type_info().name()))
     };
 
@@ -290,10 +302,10 @@ impl SqliteDriver {
           kind: runtime[i].unwrap_or_else(|| affinity(i)),
         })
         .collect(),
-      // Empty result: `described` is `Some` (we needed it above) — headers
+      // Empty result: `prepared` is `Some` (we needed it above) — headers
       // survive (e.g. `SELECT a, b WHERE 0`) with their declared affinity.
-      None => described.as_ref().map_or_else(Vec::new, |d| {
-        d.columns()
+      None => prepared.as_ref().map_or_else(Vec::new, |p| {
+        p.columns()
           .iter()
           .map(|c| Column {
             name: c.name().to_string(),
