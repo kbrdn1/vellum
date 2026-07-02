@@ -132,6 +132,37 @@ fn mysql_uses_the_ssl_mode_query_parameter() {
 }
 
 #[test]
+fn mysql_maps_postgres_style_sslmode_to_the_mysql_vocabulary() {
+  // The `.vellum.toml` field is the generic `sslmode` (Postgres vocabulary:
+  // `require` / `prefer` / `verify-full`). MySQL's `ssl-mode` expects
+  // `REQUIRED` / `PREFERRED` / `VERIFY_IDENTITY`, so the value must be mapped —
+  // passing `require` verbatim makes `MySqlConnectOptions` reject the DSN and
+  // `--conn` fails before browsing.
+  let base = || {
+    let mut c = conn(Backend::MySql);
+    c.host = Some("db".to_string());
+    c.user = Some("root".to_string());
+    c
+  };
+  for (input, expected) in [
+    ("require", "REQUIRED"),
+    ("prefer", "PREFERRED"),
+    ("disable", "DISABLED"),
+    ("verify-ca", "VERIFY_CA"),
+    ("verify-full", "VERIFY_IDENTITY"),
+  ] {
+    let mut c = base();
+    c.sslmode = Some(input.to_string());
+    let dsn = dsn::build(&c, None).unwrap();
+    assert_eq!(
+      dsn,
+      format!("mysql://root@db?ssl-mode={expected}"),
+      "sslmode `{input}` must map to MySQL `{expected}`"
+    );
+  }
+}
+
+#[test]
 fn sqlite_is_not_built_as_a_dsn() {
   // SQLite opens by path (`open_readonly`) to keep `?%#` literal; asking the DSN
   // builder for one is a caller error, surfaced as a config error.

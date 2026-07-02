@@ -18,17 +18,23 @@
 //! a `sqlite:` URI would apply — so a SQLite connection is a caller error at
 //! this seam.
 
-use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
+use percent_encoding::{utf8_percent_encode, AsciiSet, NON_ALPHANUMERIC};
 
 use crate::config::Connection;
 use crate::error::{Result, VellumError};
 use crate::model::Backend;
 
-/// Percent-encode a value for a URL: everything but ASCII alphanumerics is
-/// escaped. Over-encoding the unreserved `-._~` is harmless (they decode back),
-/// and it keeps the rule trivially correct for any password / identifier.
+/// Percent-encode set: every non-alphanumeric byte *except* the RFC 3986
+/// unreserved marks (`-` `_` `.` `~`), which are safe unencoded. Encoding them
+/// would needlessly mangle a value like `VERIFY_CA` (MySQL's `ssl-mode`) or a
+/// password containing `.` — harmless once decoded, but it makes the DSN
+/// unreadable and trips a strict parser that compares the raw token.
+const ENCODE_SET: &AsciiSet = &NON_ALPHANUMERIC.remove(b'-').remove(b'_').remove(b'.').remove(b'~');
+
+/// Percent-encode a value for a URL: everything reserved / unsafe is escaped,
+/// the unreserved marks left as-is (see [`ENCODE_SET`]).
 fn enc(value: &str) -> String {
-  utf8_percent_encode(value, NON_ALPHANUMERIC).to_string()
+  utf8_percent_encode(value, ENCODE_SET).to_string()
 }
 
 /// Build the connection DSN for `conn`, injecting `password` (already resolved
@@ -79,10 +85,35 @@ pub fn build(conn: &Connection, password: Option<&str>) -> Result<String> {
 
   // Optional TLS mode under the engine's own query parameter (`sslmode` for
   // Postgres, `ssl-mode` for MySQL) so a `sslmode = "require"` the user set to
-  // secure the connection is never silently dropped.
+  // secure the connection is never silently dropped. MySQL's parameter also
+  // takes a different vocabulary, so the generic value is mapped for it.
   if let Some(mode) = &conn.sslmode {
-    url.push_str(&format!("?{ssl_param}={}", enc(mode)));
+    let value = if conn.backend == Backend::MySql {
+      mysql_ssl_mode(mode)
+    } else {
+      mode.clone()
+    };
+    url.push_str(&format!("?{ssl_param}={}", enc(&value)));
   }
 
   Ok(url)
+}
+
+/// Map a generic (Postgres-vocabulary) `sslmode` value to MySQL's `ssl-mode`
+/// vocabulary: the `.vellum.toml` field is the common `sslmode`
+/// (`require` / `prefer` / `verify-full`), but `MySqlConnectOptions` expects
+/// `REQUIRED` / `PREFERRED` / `VERIFY_IDENTITY` and rejects the Postgres spelling
+/// outright. Already-MySQL spellings map to themselves; an unknown value passes
+/// through unchanged, so it fails closed at connect rather than being silently
+/// rewritten to something the user did not ask for.
+fn mysql_ssl_mode(value: &str) -> String {
+  match value.to_ascii_lowercase().as_str() {
+    "disable" | "disabled" => "DISABLED",
+    "prefer" | "preferred" => "PREFERRED",
+    "require" | "required" => "REQUIRED",
+    "verify-ca" | "verify_ca" => "VERIFY_CA",
+    "verify-full" | "verify-identity" | "verify_identity" => "VERIFY_IDENTITY",
+    _ => value,
+  }
+  .to_string()
 }
