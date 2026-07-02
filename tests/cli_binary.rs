@@ -14,17 +14,33 @@ mod common;
 fn help_prints_subcommands() {
   let mut cmd = Command::cargo_bin("vellum").unwrap();
   cmd.arg("--help");
-  // No subcommands yet — the Phase 0 surface is flag-based: `--db <FILE>`, a
-  // positional `[SQL]`, and `--interactive`. Assert the usage line, the about
-  // blurb, and each option marker. As the surface grows, add each new
-  // flag/subcommand row here (this canary is the gate).
+  // The default surface stays flag-based (`--db <FILE>`, a positional `[SQL]`,
+  // `--interactive`); `connect` is the first subcommand (#72). Assert the usage
+  // line, the about blurb, each default option marker, and the subcommand. As
+  // the surface grows, add each new flag/subcommand row here (this canary is the
+  // gate).
   cmd
     .assert()
     .success()
     .stdout(predicate::str::contains("Usage:"))
     .stdout(predicate::str::contains("SQL client"))
     .stdout(predicate::str::contains("--db"))
-    .stdout(predicate::str::contains("--interactive"));
+    .stdout(predicate::str::contains("--interactive"))
+    .stdout(predicate::str::contains("connect"));
+}
+
+#[test]
+fn connect_help_shows_the_name_argument() {
+  // `vellum connect <NAME>` — `--help` short-circuits before any prompt or
+  // keychain access, so this is safe to run in CI. It must document the
+  // connection-name positional.
+  let mut cmd = Command::cargo_bin("vellum").unwrap();
+  cmd.args(["connect", "--help"]);
+  cmd
+    .assert()
+    .success()
+    .stdout(predicate::str::contains("Usage:"))
+    .stdout(predicate::str::contains("NAME"));
 }
 
 #[test]
