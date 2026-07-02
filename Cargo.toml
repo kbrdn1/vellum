@@ -72,15 +72,18 @@ async-trait = "0.1"
 # decode so the read paths map those into the existing `Value` variants; the
 # long tail (numeric, arrays, enums) hits a conservative non-data marker (#76).
 # `default-features = false` skips the unused macros / migrate features. NOTE:
-# the `mysql` driver pulls `rsa` (RUSTSEC-2023-0071, Marvin attack, no upstream
-# fix) for `caching_sha2_password` auth — now a real compiled dep, not the #10
-# phantom. The audit job is informational (continue-on-error).
+# sqlx 0.9 split RSA auth out of `mysql` into the opt-in `mysql-rsa` feature; we
+# enable it so a non-TLS MySQL/MariaDB connection using `caching_sha2_password`
+# / `sha256_password` (MySQL 8's default) still authenticates — as it did on 0.8.
+# It pulls `rsa` (RUSTSEC-2023-0071, Marvin attack, no upstream fix), a real
+# compiled dep; the audit job is informational (continue-on-error).
 sqlx = { version = "0.9", default-features = false, features = [
   "runtime-tokio",
   "tls-rustls",
   "sqlite",
   "postgres",
   "mysql",
+  "mysql-rsa",
   "uuid",
   "json",
   "time",
