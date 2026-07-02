@@ -645,17 +645,19 @@ mod postgres_it {
     let pool = seed_pool().await;
     pool.execute("drop table if exists it_numeric").await.expect("drop");
     pool
-      .execute("create table it_numeric (n numeric, big numeric(40, 10), nan numeric, money numeric(10, 2))")
+      .execute(
+        "create table it_numeric (n numeric, big numeric(40, 10), nan numeric, money numeric(10, 2), tiny numeric)",
+      )
       .await
       .expect("create table");
     pool
-      .execute("insert into it_numeric values (12345.6789, 1234567890123456789012345678.9012345678, 'NaN', 1.20)")
+      .execute("insert into it_numeric values (12345.6789, 1234567890123456789012345678.9012345678, 'NaN', 1.20, 0.000000491326)")
       .await
       .expect("seed row");
 
     let driver = PostgresDriver::connect(&dsn()).await.expect("connect read-only");
     let result = driver
-      .query("select n, big, nan, money from it_numeric")
+      .query("select n, big, nan, money, tiny from it_numeric")
       .await
       .expect("query");
     let row = &result.rows[0];
@@ -674,6 +676,11 @@ mod postgres_it {
       row[3],
       Value::Decimal("1.20".into()),
       "a fixed-scale numeric(10,2) keeps its declared trailing zero (PG's dscale)"
+    );
+    assert_eq!(
+      row[4],
+      Value::Decimal("0.000000491326".into()),
+      "a small numeric stays plain decimal, never scientific notation"
     );
     assert_eq!(
       result.columns[0].kind,

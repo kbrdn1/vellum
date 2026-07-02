@@ -447,7 +447,9 @@ fn decode_pg_numeric(raw: &PgValueRef, row: &PgRow, i: usize) -> Value {
       .ok()
       .and_then(|b| b.get(6..8).map(|s| i16::from_be_bytes([s[0], s[1]])))
       .filter(|&scale| scale >= 0)
-      .map(|scale| d.with_scale(i64::from(scale)).to_string())
+      // `to_plain_string` (not `to_string`): `BigDecimal` renders small/large
+      // values in scientific notation (`4.91326E-7`), which isn't PG's text.
+      .map(|scale| d.with_scale(i64::from(scale)).to_plain_string())
   };
   Value::Decimal(text.unwrap_or_else(|| format_pg_numeric(&d)))
 }
@@ -460,7 +462,9 @@ fn decode_pg_numeric(raw: &PgValueRef, row: &PgRow, i: usize) -> Value {
 /// only effect is that a declared trailing zero (`1.10`) reads `1.1` — but this
 /// path is hit only when the primary `dscale`-preserving decode couldn't.
 fn format_pg_numeric(d: &BigDecimal) -> String {
-  let s = d.to_string();
+  // `to_plain_string` avoids `BigDecimal`'s scientific notation for small/large
+  // values, keeping a plain decimal to trim.
+  let s = d.to_plain_string();
   if s.contains('.') {
     let s = s.trim_end_matches('0');
     s.strip_suffix('.').unwrap_or(s).to_string()
