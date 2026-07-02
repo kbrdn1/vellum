@@ -100,7 +100,7 @@ pub async fn run(cli: Cli) -> Result<()> {
       let driver = SqliteDriver::open_readonly(&db).await?;
       let catalog = driver.introspect().await?;
       let app = App::browse(catalog, driver.capabilities(), driver.backend());
-      tui::browse(driver, app).await
+      tui::browse(Box::new(driver), app).await
     }
     (None, Some(_)) => Err(VellumError::Arg("--db <FILE> is required to run a query".to_string())),
     // `--interactive` without a database/query is a usage error, not a silent

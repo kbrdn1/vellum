@@ -8,7 +8,7 @@
 
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind};
 
-use crate::driver::{Driver, SqliteDriver};
+use crate::driver::Driver;
 use crate::error::Result;
 use crate::model::QueryResult;
 use crate::tui::app::{App, PageTarget};
@@ -37,8 +37,10 @@ pub fn run(result: QueryResult) -> Result<()> {
 /// Launch the interactive browse UI over `driver`: render the schema sidebar +
 /// result table, and on each navigation drain the [`PageTarget`] and fetch that
 /// page read-only. Restores the terminal on the way out, including on a fetch
-/// error (so a query failure can't leave the terminal in raw mode).
-pub async fn browse(driver: SqliteDriver, mut app: App) -> Result<()> {
+/// error (so a query failure can't leave the terminal in raw mode). Takes a
+/// `Box<dyn Driver>` so any backend (SQLite by `--db`, or a named PG / MySQL /
+/// SQLite connection by `--conn`) browses through the one loop.
+pub async fn browse(driver: Box<dyn Driver>, mut app: App) -> Result<()> {
   let mut terminal = match ratatui::try_init() {
     Ok(terminal) => terminal,
     Err(e) => {
@@ -46,7 +48,7 @@ pub async fn browse(driver: SqliteDriver, mut app: App) -> Result<()> {
       return Err(e.into());
     }
   };
-  let outcome = browse_loop(&mut terminal, &driver, &mut app).await;
+  let outcome = browse_loop(&mut terminal, &*driver, &mut app).await;
   ratatui::try_restore()?;
   outcome
 }
@@ -54,7 +56,7 @@ pub async fn browse(driver: SqliteDriver, mut app: App) -> Result<()> {
 /// Browse event loop: draw, read a key, dispatch, then service one pending page
 /// fetch. All coordination lives in [`App::take_page_target`]; this loop only
 /// turns the target into a query and feeds the rows back. Manual Phase-1 gate.
-async fn browse_loop(terminal: &mut ratatui::DefaultTerminal, driver: &SqliteDriver, app: &mut App) -> Result<()> {
+async fn browse_loop(terminal: &mut ratatui::DefaultTerminal, driver: &dyn Driver, app: &mut App) -> Result<()> {
   loop {
     terminal.draw(|frame| view::render(frame, &*app))?;
     if let Event::Key(key) = event::read()? {
