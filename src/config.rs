@@ -15,6 +15,7 @@
 //!   TOML type is refused outright (see [`Config::from_toml_str`]).
 
 use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
@@ -168,6 +169,26 @@ impl Config {
     Ok(Config {
       connections,
       ui: raw.ui,
+    })
+  }
+
+  /// Read and parse a `.vellum.toml` at `path`. Real implementation lands in
+  /// the green step (#95).
+  pub fn load_path(path: &Path) -> Result<Config> {
+    let _ = path;
+    Ok(Config {
+      connections: BTreeMap::new(),
+      ui: Ui::default(),
+    })
+  }
+
+  /// Load the first `candidates` entry that `exists`, or a config error naming
+  /// where it looked. Real implementation lands in the green step (#95).
+  pub fn load_discovered(candidates: &[PathBuf], exists: impl Fn(&Path) -> bool) -> Result<Config> {
+    let _ = (candidates, exists);
+    Ok(Config {
+      connections: BTreeMap::new(),
+      ui: Ui::default(),
     })
   }
 }

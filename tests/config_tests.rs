@@ -4,6 +4,9 @@
 //! shape, `[ui]` defaults, the closed backend set, and the safety gates
 //! (unknown keys / plaintext secrets rejected).
 
+use std::fs;
+use std::path::PathBuf;
+
 use vellum::config::Config;
 use vellum::error::VellumError;
 use vellum::model::Backend;
@@ -193,5 +196,115 @@ fn rejects_connection_names_that_collide_under_the_env_override() {
   assert!(
     matches!(err, VellumError::Config(_)),
     "expected VellumError::Config, got {err:?}"
+  );
+}
+
+// --- Discovery / load (#95) ---------------------------------------------------
+//
+// `Config::load()` finds `.vellum.toml` (cwd first, then the global XDG dir) and
+// parses it. The FS-touching read is tested with a real temp file; the
+// precedence is tested through the injectable `load_discovered` seam (candidate
+// list + an `exists` predicate) so it never depends on the runner's real cwd or
+// home — the same discipline the secrets `resolve_with` seam uses.
+
+/// Write `contents` to `dir/<name>` and return its path. `load_path` takes an
+/// explicit path, so distinct file names in one temp dir keep the cwd / global
+/// candidates apart without nested subdirs.
+fn write_config(dir: &std::path::Path, name: &str, contents: &str) -> PathBuf {
+  let path = dir.join(name);
+  fs::write(&path, contents).expect("write temp config");
+  path
+}
+
+#[test]
+fn load_path_reads_and_parses_a_file() {
+  let dir = tempfile::tempdir().expect("temp dir");
+  let path = write_config(
+    dir.path(),
+    "cwd.toml",
+    r#"
+      [connections.demo]
+      backend = "sqlite"
+      path    = "./demo.db"
+    "#,
+  );
+
+  let config = Config::load_path(&path).expect("an existing valid file loads");
+  assert_eq!(config.connections.len(), 1);
+  assert_eq!(config.connections["demo"].backend, Backend::Sqlite);
+}
+
+#[test]
+fn load_path_on_a_missing_file_errors() {
+  let dir = tempfile::tempdir().expect("temp dir");
+  let missing = dir.path().join("nope.toml");
+
+  let err = Config::load_path(&missing).expect_err("a missing file must error");
+  assert!(
+    matches!(err, VellumError::Config(_)),
+    "expected VellumError::Config, got {err:?}"
+  );
+}
+
+#[test]
+fn load_discovered_prefers_the_first_existing_candidate() {
+  // Both candidates exist; the cwd-local file (first) must win over the global
+  // one so a project can override the shared registry.
+  let dir = tempfile::tempdir().expect("temp dir");
+  let cwd = write_config(
+    dir.path(),
+    "cwd.toml",
+    "[connections.from-cwd]\nbackend = \"postgres\"\n",
+  );
+  let global = write_config(
+    dir.path(),
+    "global.toml",
+    "[connections.from-global]\nbackend = \"mysql\"\n",
+  );
+
+  let config = Config::load_discovered(&[cwd, global], |_| true).expect("first candidate loads");
+  assert!(
+    config.connections.contains_key("from-cwd"),
+    "the cwd-local file must win, got {:?}",
+    config.connections.keys().collect::<Vec<_>>()
+  );
+  assert!(!config.connections.contains_key("from-global"));
+}
+
+#[test]
+fn load_discovered_falls_back_to_a_later_candidate() {
+  // The cwd file is absent (predicate false for it); discovery must fall through
+  // to the global candidate rather than error.
+  let dir = tempfile::tempdir().expect("temp dir");
+  let cwd = dir.path().join("absent-cwd.toml");
+  let global = write_config(
+    dir.path(),
+    "global.toml",
+    "[connections.from-global]\nbackend = \"mysql\"\n",
+  );
+
+  let only_global = global.clone();
+  let config = Config::load_discovered(&[cwd, global], move |p| p == only_global).expect("the global candidate loads");
+  assert!(config.connections.contains_key("from-global"));
+}
+
+#[test]
+fn load_discovered_with_nothing_found_errors_helpfully() {
+  // No candidate exists → a config error that points the user at how to create
+  // one (`vellum connect` / a `.vellum.toml`), not a bare "not found".
+  let candidates = [PathBuf::from("/nope/.vellum.toml")];
+
+  let err = Config::load_discovered(&candidates, |_| false).expect_err("no config found must error");
+  let VellumError::Config(message) = err else {
+    panic!("expected VellumError::Config, got {err:?}");
+  };
+  let lower = message.to_lowercase();
+  assert!(
+    lower.contains(".vellum.toml"),
+    "message should name the config file: {message}"
+  );
+  assert!(
+    lower.contains("connect"),
+    "message should point at `vellum connect`: {message}"
   );
 }
