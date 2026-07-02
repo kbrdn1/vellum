@@ -9,6 +9,7 @@
 pub mod cli;
 pub mod config;
 pub mod driver;
+pub mod dsn;
 pub mod error;
 pub mod keyring_store;
 pub mod model;

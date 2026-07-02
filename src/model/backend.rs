@@ -32,4 +32,16 @@ impl Backend {
       Backend::Sqlite => "sqlite",
     }
   }
+
+  /// Quote an identifier (schema / table / column) for this engine's SQL
+  /// dialect, doubling the quote char so a name containing it can't break out of
+  /// the quoting. Postgres and SQLite use ANSI double quotes; MySQL uses
+  /// backticks — its default mode reads `"` as a string literal, so a
+  /// double-quoted table name would parse as a string and the query would fail.
+  pub fn quote_ident(&self, ident: &str) -> String {
+    match self {
+      Backend::MySql => format!("`{}`", ident.replace('`', "``")),
+      Backend::Postgres | Backend::Sqlite => format!("\"{}\"", ident.replace('"', "\"\"")),
+    }
+  }
 }

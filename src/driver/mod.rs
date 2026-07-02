@@ -21,8 +21,13 @@ use sqlparser::ast::{Query, SetExpr, Statement};
 use sqlparser::dialect::Dialect;
 use sqlparser::parser::Parser;
 
+use std::path::Path;
+
+use crate::config::Connection;
+use crate::dsn;
 use crate::error::{Result, VellumError};
 use crate::model::{Backend, Catalog, QueryResult};
+use crate::secrets::{Credential, ExposeSecret};
 
 /// Guard the read path for every backend: reject anything that isn't a single
 /// read-only query before it reaches the database. The `dialect` is the
@@ -156,6 +161,54 @@ pub trait Driver: Send + Sync {
 
   /// What this backend supports, for per-engine UI gating.
   fn capabilities(&self) -> Capabilities;
+}
+
+/// Open a driver for a named `.vellum.toml` connection, resolving the credential
+/// into a live `Box<dyn Driver>` (#95).
+///
+/// A `Credential::Dsn` (a `VELLUM_DSN_<NAME>` override) is used **verbatim**,
+/// dispatched by `backend` — the config fields are ignored, matching the
+/// documented CI / scripting escape hatch. Otherwise the DSN is built from the
+/// connection fields plus the stored password ([`dsn::build`]) and routed
+/// through the driver's own `connect`, so the per-engine read-only backstop is
+/// never duplicated. SQLite is opened by `path` via `open_readonly` (which keeps
+/// a `?%#` in the file name literal rather than reinterpreting it as a URI).
+pub async fn connect_named(conn: &Connection, credential: Option<Credential>) -> Result<Box<dyn Driver>> {
+  // Full DSN override: used as-is, keyring / config fields bypassed.
+  if let Some(Credential::Dsn(dsn)) = &credential {
+    return connect_dsn(conn.backend, dsn.expose_secret()).await;
+  }
+
+  // A stored password (or none) combined with the connection fields.
+  let password = match &credential {
+    Some(Credential::Password(secret)) => Some(secret.expose_secret()),
+    _ => None,
+  };
+
+  match conn.backend {
+    // SQLite has no DSN here — open the literal file read-only.
+    Backend::Sqlite => {
+      let path = conn.path.as_deref().ok_or_else(|| {
+        VellumError::Config("a SQLite connection needs a `path` in the `.vellum.toml` entry".to_string())
+      })?;
+      Ok(Box::new(SqliteDriver::open_readonly(Path::new(path)).await?))
+    }
+    _ => {
+      let dsn = dsn::build(conn, password)?;
+      connect_dsn(conn.backend, &dsn).await
+    }
+  }
+}
+
+/// Connect the concrete driver for `backend` from a ready `dsn` and box it
+/// behind the port. The one place the backend enum fans out to a concrete
+/// `Driver::connect`.
+async fn connect_dsn(backend: Backend, dsn: &str) -> Result<Box<dyn Driver>> {
+  Ok(match backend {
+    Backend::Postgres => Box::new(PostgresDriver::connect(dsn).await?),
+    Backend::MySql => Box::new(MySqlDriver::connect(dsn).await?),
+    Backend::Sqlite => Box::new(SqliteDriver::connect(dsn).await?),
+  })
 }
 
 #[cfg(test)]

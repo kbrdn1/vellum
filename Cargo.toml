@@ -103,6 +103,18 @@ ratatui = "0.30"
 # name (2 cells per char) can't overflow the line and shove the version chip
 # off-screen (#88). Already in the tree via ratatui — pinned as a direct dep.
 unicode-width = "0.2"
+# Percent-encode connection fields into a DSN (#95). A `.vellum.toml` user /
+# password / database can carry URL-reserved bytes (`@ : / # %`), so the DSN
+# builder encodes each value before assembling `scheme://user:pass@host/db` —
+# an unencoded `@` in a password would otherwise re-parse as the host boundary
+# and mis-route the connection. Already in the tree via `sqlx → url`; pinned as
+# a direct dep so the builder doesn't lean on a transitive.
+percent-encoding = "2"
+# XDG / platform config discovery (#95). `Config::load` looks for `.vellum.toml`
+# in the cwd then the global config dir (`~/.config/vellum/` on Linux, the
+# platform equivalent elsewhere) — `dirs` resolves the latter portably. The
+# roadmap's chosen path crate (ARCHITECTURE §stack, "gwm ✓").
+dirs = "6"
 
 # OS keyring backend for the `SecretStore` port (#72). keyring 3.x makes the
 # platform backend non-default, so it is selected per-OS: macOS Keychain,

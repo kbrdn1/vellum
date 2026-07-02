@@ -337,7 +337,12 @@ impl App {
       relation,
       limit: paginator.limit(),
       offset: paginator.offset(),
-      order_by: self.sort.as_ref().map(Sort::order_by_clause),
+      // A browse `App` always carries a backend (set by `App::browse`); the
+      // SQLite fallback (ANSI double quotes) never triggers on this path.
+      order_by: self
+        .sort
+        .as_ref()
+        .map(|sort| sort.order_by_clause(self.backend.unwrap_or(Backend::Sqlite))),
     })
   }
 

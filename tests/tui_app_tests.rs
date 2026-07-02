@@ -641,7 +641,7 @@ fn s_sorts_the_current_column_and_asks_for_a_requery() {
   assert!(app.sort().is_none(), "no sort until asked");
   app.on_key('s');
   assert_eq!(
-    app.sort().map(|s| s.order_by_clause()),
+    app.sort().map(|s| s.order_by_clause(Backend::Sqlite)),
     Some(r#"ORDER BY "c0" ASC"#.to_string()),
     "sorts the column under the horizontal cursor (col 0)"
   );
@@ -653,9 +653,15 @@ fn s_sorts_the_current_column_and_asks_for_a_requery() {
 fn s_cycles_ascending_descending_off() {
   let mut app = browse_with_loaded_table();
   app.on_key('s');
-  assert_eq!(app.sort().unwrap().order_by_clause(), r#"ORDER BY "c0" ASC"#);
+  assert_eq!(
+    app.sort().unwrap().order_by_clause(Backend::Sqlite),
+    r#"ORDER BY "c0" ASC"#
+  );
   app.on_key('s');
-  assert_eq!(app.sort().unwrap().order_by_clause(), r#"ORDER BY "c0" DESC"#);
+  assert_eq!(
+    app.sort().unwrap().order_by_clause(Backend::Sqlite),
+    r#"ORDER BY "c0" DESC"#
+  );
   app.on_key('s');
   assert!(app.sort().is_none(), "the third press clears the sort");
 }

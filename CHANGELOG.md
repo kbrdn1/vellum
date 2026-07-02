@@ -15,6 +15,23 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Phase 1 — `vellum --conn <name>` browses a named connection (#95):** the
+  connection manager is now wired end to end — `--conn <name>` loads
+  `.vellum.toml` (discovered in the cwd first, then the global config dir via
+  `dirs`), resolves the credential (a keyring password, or a full DSN from a
+  `VELLUM_DSN_<NAME>` override), opens the backend read-only, and browses it
+  through the same UI as `--db`. The browse runtime now drives any backend
+  (`Box<dyn Driver>`), so a registered Postgres / MySQL / SQLite database
+  introspects and paginates identically. The DSN is assembled from the
+  connection fields with the userinfo / database / `sslmode` percent-encoded
+  (`percent-encoding`), so a URL-structural byte in a password can't re-parse
+  the `user:pass@host` boundary and mis-route the connection; the built DSN is
+  routed through each driver's own `connect`, so the per-engine read-only
+  backstop is never duplicated, and it is kept out of every error message.
+  `--conn` conflicts with `--db`; an unknown name reports itself and points at
+  `vellum connect`; a query alongside `--conn` is refused (that path is a later
+  phase). This closes the Phase-1 exit gate: connect to a registered database,
+  introspect it, and browse.
 - **Phase 1 — OS keyring backend + `vellum connect` (#72):** a connection's
   password can now live in the system keychain instead of a `VELLUM_DSN_*`
   environment variable. `vellum connect <name>` prompts for the password with

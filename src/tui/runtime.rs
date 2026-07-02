@@ -8,9 +8,9 @@
 
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind};
 
-use crate::driver::{Driver, SqliteDriver};
+use crate::driver::Driver;
 use crate::error::Result;
-use crate::model::QueryResult;
+use crate::model::{Backend, QueryResult};
 use crate::tui::app::{App, PageTarget};
 use crate::tui::state::sidebar::RelationRef;
 use crate::tui::view;
@@ -37,8 +37,10 @@ pub fn run(result: QueryResult) -> Result<()> {
 /// Launch the interactive browse UI over `driver`: render the schema sidebar +
 /// result table, and on each navigation drain the [`PageTarget`] and fetch that
 /// page read-only. Restores the terminal on the way out, including on a fetch
-/// error (so a query failure can't leave the terminal in raw mode).
-pub async fn browse(driver: SqliteDriver, mut app: App) -> Result<()> {
+/// error (so a query failure can't leave the terminal in raw mode). Takes a
+/// `Box<dyn Driver>` so any backend (SQLite by `--db`, or a named PG / MySQL /
+/// SQLite connection by `--conn`) browses through the one loop.
+pub async fn browse(driver: Box<dyn Driver>, mut app: App) -> Result<()> {
   let mut terminal = match ratatui::try_init() {
     Ok(terminal) => terminal,
     Err(e) => {
@@ -46,7 +48,7 @@ pub async fn browse(driver: SqliteDriver, mut app: App) -> Result<()> {
       return Err(e.into());
     }
   };
-  let outcome = browse_loop(&mut terminal, &driver, &mut app).await;
+  let outcome = browse_loop(&mut terminal, &*driver, &mut app).await;
   ratatui::try_restore()?;
   outcome
 }
@@ -54,7 +56,7 @@ pub async fn browse(driver: SqliteDriver, mut app: App) -> Result<()> {
 /// Browse event loop: draw, read a key, dispatch, then service one pending page
 /// fetch. All coordination lives in [`App::take_page_target`]; this loop only
 /// turns the target into a query and feeds the rows back. Manual Phase-1 gate.
-async fn browse_loop(terminal: &mut ratatui::DefaultTerminal, driver: &SqliteDriver, app: &mut App) -> Result<()> {
+async fn browse_loop(terminal: &mut ratatui::DefaultTerminal, driver: &dyn Driver, app: &mut App) -> Result<()> {
   loop {
     terminal.draw(|frame| view::render(frame, &*app))?;
     if let Event::Key(key) = event::read()? {
@@ -65,7 +67,7 @@ async fn browse_loop(terminal: &mut ratatui::DefaultTerminal, driver: &SqliteDri
       }
     }
     if let Some(target) = app.take_page_target() {
-      let sql = page_sql(&target);
+      let sql = page_sql(driver.backend(), &target);
       let result = driver.query(&sql).await;
       apply_fetch(app, sql, result, &target.relation);
     }
@@ -95,11 +97,12 @@ pub fn apply_fetch(app: &mut App, sql: String, result: Result<QueryResult>, rela
 }
 
 /// Build the read-only page query for a browse fetch: `SELECT * FROM
-/// "schema"."relation" [ORDER BY …] LIMIT n OFFSET m`. Identifiers are
-/// double-quoted with embedded quotes doubled, so a name like `a"b` can't break
-/// out of the quoting. Pure — tested in `tui_runtime_tests.rs`.
-pub fn page_sql(target: &PageTarget) -> String {
-  let table = quote_qualified(&target.relation.schema, &target.relation.relation);
+/// <schema>.<relation> [ORDER BY …] LIMIT n OFFSET m`. Identifiers are quoted
+/// for `backend`'s dialect (ANSI double quotes for Postgres / SQLite, backticks
+/// for MySQL) with the quote char doubled, so a name like `a"b` can't break out
+/// of the quoting. Pure — tested in `tui_runtime_tests.rs`.
+pub fn page_sql(backend: Backend, target: &PageTarget) -> String {
+  let table = quote_qualified(backend, &target.relation.schema, &target.relation.relation);
   let order = target
     .order_by
     .as_deref()
@@ -111,14 +114,14 @@ pub fn page_sql(target: &PageTarget) -> String {
   )
 }
 
-/// Double-quote a `schema.relation` identifier (schema omitted when empty).
-fn quote_qualified(schema: &str, relation: &str) -> String {
-  let relation = relation.replace('"', "\"\"");
+/// Quote a `schema.relation` identifier for `backend`'s dialect (schema omitted
+/// when empty).
+fn quote_qualified(backend: Backend, schema: &str, relation: &str) -> String {
+  let relation = backend.quote_ident(relation);
   if schema.is_empty() {
-    format!("\"{relation}\"")
+    relation
   } else {
-    let schema = schema.replace('"', "\"\"");
-    format!("\"{schema}\".\"{relation}\"")
+    format!("{}.{relation}", backend.quote_ident(schema))
   }
 }
 
