@@ -336,6 +336,14 @@ fn pg_value_at(row: &PgRow, i: usize) -> Result<Value> {
     let elem_name = elem.name().to_string();
     return decode_pg_array(row, i, &elem_name);
   }
+  // Enums decode to their text label. `try_get::<String>` would fail the enum's
+  // own-OID type-compat check, so decode straight from the raw value (the wire
+  // form of an enum *is* its label).
+  if matches!(raw.type_info().kind(), PgTypeKind::Enum(_)) {
+    return <String as sqlx::Decode<sqlx::Postgres>>::decode(raw)
+      .map(Value::Text)
+      .map_err(|e| VellumError::Driver(e.to_string()));
+  }
   let value = match type_name.as_str() {
     "BOOL" => Value::Bool(row.try_get::<bool, _>(i).map_err(driver_err)?),
     "INT2" => Value::Int(i64::from(row.try_get::<i16, _>(i).map_err(driver_err)?)),

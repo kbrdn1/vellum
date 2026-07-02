@@ -716,6 +716,35 @@ mod postgres_it {
   }
 
   #[tokio::test]
+  async fn pg_decodes_enum_as_its_label() {
+    // #76: an enum used to hit the `<it_mood>` marker. Decode it faithfully as
+    // its text label.
+    let pool = seed_pool().await;
+    pool.execute("drop table if exists it_enum").await.expect("drop table");
+    pool.execute("drop type if exists it_mood").await.expect("drop type");
+    pool
+      .execute("create type it_mood as enum ('sad', 'ok', 'happy')")
+      .await
+      .expect("create type");
+    pool
+      .execute("create table it_enum (m it_mood)")
+      .await
+      .expect("create table");
+    pool
+      .execute("insert into it_enum values ('happy')")
+      .await
+      .expect("seed row");
+
+    let driver = PostgresDriver::connect(&dsn()).await.expect("connect read-only");
+    let result = driver.query("select m from it_enum").await.expect("query");
+    assert_eq!(
+      result.rows[0][0],
+      Value::Text("happy".into()),
+      "enum decodes to its label"
+    );
+  }
+
+  #[tokio::test]
   async fn pg_query_refuses_a_data_modifying_cte() {
     // THE write-path guard for PG: a data-modifying CTE parses as a single
     // top-level `SELECT` (the sqlparser guard waves it through) but it WRITES.
