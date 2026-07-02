@@ -10,6 +10,7 @@ pub mod cli;
 pub mod config;
 pub mod driver;
 pub mod error;
+pub mod keyring_store;
 pub mod model;
 pub mod secrets;
 pub mod tui;

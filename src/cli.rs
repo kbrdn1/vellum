@@ -7,11 +7,13 @@
 
 use std::io::IsTerminal;
 
-use clap::Parser;
+use clap::{Parser, Subcommand};
 
 use crate::driver::{Driver, SqliteDriver};
 use crate::error::{Result, VellumError};
+use crate::keyring_store::{store_secret, KeyringStore};
 use crate::model::QueryResult;
+use crate::secrets::{SecretStore, SecretString};
 use crate::tui;
 use crate::tui::app::App;
 
@@ -26,6 +28,11 @@ databases with a GitHub-like diff). Phase 0: one-shot `--db <FILE> \"<SQL>\"` \
 prints a read-only query; add `--interactive` for the scrollable TUI table."
 )]
 pub struct Cli {
+  /// Subcommands (e.g. `connect`). When omitted, the default one-shot / browse
+  /// surface (`--db`, `[SQL]`, `--interactive`) applies.
+  #[command(subcommand)]
+  pub command: Option<Command>,
+
   /// Path to the SQLite database file to open (read-only).
   #[arg(long, value_name = "FILE")]
   pub db: Option<std::path::PathBuf>,
@@ -42,9 +49,32 @@ pub struct Cli {
   pub interactive: bool,
 }
 
+/// vellum subcommands. Phase 1 adds `connect`; the default (no subcommand)
+/// surface stays the flag-based one-shot / browse mode.
+#[derive(Debug, Subcommand)]
+pub enum Command {
+  /// Store a connection's password in the OS keyring (prompted, no echo).
+  ///
+  /// Reads the password interactively and stores it under `vellum:<name>` so a
+  /// secret never lives in `.vellum.toml`. The `<name>` is stored as given —
+  /// validating it against a `.vellum.toml` entry lands with the connection
+  /// wiring that reads the config.
+  Connect {
+    /// The connection name to store a password for (the `[connections.<name>]`
+    /// key it will resolve against).
+    #[arg(value_name = "NAME")]
+    name: String,
+  },
+}
+
 /// Run the resolved CLI. Returns `Ok(())` on success; the binary maps an `Err`
 /// to a non-zero exit in `main` (the one-shot `exit 0 / exit 1` contract).
 pub async fn run(cli: Cli) -> Result<()> {
+  // A subcommand takes the whole run; the default surface applies only when
+  // none is given.
+  if let Some(command) = cli.command {
+    return run_command(command);
+  }
   let interactive = cli.interactive;
   match (cli.db, cli.sql) {
     (Some(db), Some(sql)) => {
@@ -86,6 +116,38 @@ pub async fn run(cli: Cli) -> Result<()> {
       Ok(())
     }
   }
+}
+
+/// Dispatch a subcommand. Kept sync — `connect` prompts and hits the OS
+/// keyring, no async work — and called before any async path in [`run`].
+fn run_command(command: Command) -> Result<()> {
+  match command {
+    Command::Connect { name } => connect(&name),
+  }
+}
+
+/// `vellum connect <name>`: read a password with no terminal echo and store it
+/// in the OS keyring under the connection name. Thin wrapper — it injects the
+/// two untestable edges (the `rpassword` prompt and the real [`KeyringStore`])
+/// into [`connect_with`], then prints the confirmation.
+fn connect(name: &str) -> Result<()> {
+  connect_with(&KeyringStore::new(), name, || {
+    rpassword::prompt_password(format!("Password for `{name}`: "))
+      .map_err(|e| VellumError::Secret(format!("could not read the password: {e}")))
+  })?;
+  println!("stored the password for `{name}` in the system keyring");
+  Ok(())
+}
+
+/// The core of `vellum connect`, with the password source and the secret store
+/// injected so the whole path — read the password, wrap it in a
+/// [`SecretString`], store it under `name` — is exercisable without a tty or a
+/// real keychain. `read_password` yields the plaintext (an aborted / failed
+/// prompt is an `Err`, and nothing is stored); the real command passes
+/// `rpassword` + a [`KeyringStore`], tests pass a fake reader + `MemoryStore`.
+pub fn connect_with(store: &dyn SecretStore, name: &str, read_password: impl FnOnce() -> Result<String>) -> Result<()> {
+  let password = read_password()?;
+  store_secret(store, name, &SecretString::from(password))
 }
 
 /// Refuse to launch a full-screen TUI when stdout is not a terminal (piped,

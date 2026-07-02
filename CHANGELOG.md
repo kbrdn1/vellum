@@ -15,6 +15,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Phase 1 — OS keyring backend + `vellum connect` (#72):** a connection's
+  password can now live in the system keychain instead of a `VELLUM_DSN_*`
+  environment variable. `vellum connect <name>` prompts for the password with
+  no terminal echo and stores it under `vellum:<name>`, behind the existing
+  `SecretStore` port — so a secret still never touches `.vellum.toml`. The
+  `KeyringStore` adapter selects the native backend per OS (macOS Keychain,
+  Windows Credential Manager, Linux `keyutils`); the storing seam is covered
+  through the port with the in-process store (CI never touches a real
+  keychain). The `<name>` is stored as given — validating it against a
+  `.vellum.toml` entry lands with the connection wiring that reads the config.
 - **Phase 1 — schema tree icons + connector guides (#89):** the browse sidebar
   renders like gwm's working-tree pane — a per-kind glyph on each node
   (database / schema-folder / table / view / column) preceded by tree connector
