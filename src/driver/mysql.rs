@@ -13,10 +13,10 @@
 use std::str::FromStr;
 
 use async_trait::async_trait;
-use sqlx::mysql::{MySqlConnectOptions, MySqlPool, MySqlPoolOptions, MySqlRow};
+use sqlx::mysql::{MySqlColumn, MySqlConnectOptions, MySqlPool, MySqlPoolOptions, MySqlRow};
 // Trait methods imported anonymously to avoid colliding with the domain
 // `Column` / `Row` types.
-use sqlx::{Column as _, Row as _, TypeInfo as _, ValueRef as _};
+use sqlx::{Column as _, Executor as _, Row as _, TypeInfo as _, ValueRef as _};
 
 use sqlparser::dialect::MySqlDialect;
 
@@ -216,18 +216,13 @@ impl Driver for MySqlDriver {
     }
 
     // MySQL reports column types reliably; the header kind comes from the
-    // column type. Headers for an *empty* result land with the browse consumer
-    // (#15) — no caller needs them in #11.
+    // column type. An *empty* result carries no row metadata, so its headers
+    // come from the statement's `describe` — an empty relation still renders its
+    // columns and stays sortable (#97). `describe` prepares without executing,
+    // so it is safe on the read path.
     let columns = match raw_rows.first() {
-      Some(meta) => meta
-        .columns()
-        .iter()
-        .map(|c| Column {
-          name: c.name().to_string(),
-          kind: typekind_from_mysql(c.type_info().name()),
-        })
-        .collect(),
-      None => Vec::new(),
+      Some(meta) => columns_from(meta.columns()),
+      None => columns_from((&self.pool).describe(sql).await.map_err(driver_err)?.columns()),
     };
 
     Ok(QueryResult {
@@ -301,6 +296,19 @@ fn mysql_value_at(row: &MySqlRow, i: usize) -> Result<Value> {
     _ => Value::Text(format!("<{}>", type_name.to_lowercase())),
   };
   Ok(value)
+}
+
+/// Build the domain column headers from a slice of MySQL columns — shared by
+/// the row-metadata path (a non-empty result) and the `describe` path (an empty
+/// one, #97) so both spell the header identically.
+fn columns_from(cols: &[MySqlColumn]) -> Vec<Column> {
+  cols
+    .iter()
+    .map(|c| Column {
+      name: c.name().to_string(),
+      kind: typekind_from_mysql(c.type_info().name()),
+    })
+    .collect()
 }
 
 /// Map a MySQL type name to a column-header `TypeKind`. The conservative long
