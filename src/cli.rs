@@ -13,8 +13,8 @@ use crate::config::Config;
 use crate::driver::{connect_named, Driver, SqliteDriver};
 use crate::error::{Result, VellumError};
 use crate::keyring_store::{store_secret, KeyringStore};
-use crate::model::QueryResult;
-use crate::secrets::{resolve, SecretStore, SecretString};
+use crate::model::{Backend, QueryResult};
+use crate::secrets::{resolve, Credential, MemoryStore, SecretStore, SecretString};
 use crate::tui;
 use crate::tui::app::App;
 
@@ -162,11 +162,28 @@ async fn browse_connection(name: &str) -> Result<()> {
     ))
   })?;
   require_terminal()?;
-  let credential = resolve(name, &KeyringStore::new())?;
+  let credential = resolve_credential(connection.backend, name, &KeyringStore::new())?;
   let driver = connect_named(connection, credential).await?;
   let catalog = driver.introspect().await?;
   let app = App::browse(catalog, driver.capabilities(), driver.backend());
   tui::browse(driver, app).await
+}
+
+/// Resolve a connection's credential, skipping the OS keyring for backends that
+/// need no password.
+///
+/// SQLite opens by path and never needs a secret, so its browse must not be
+/// gated by the keyring's availability: an unreachable keyring (no session
+/// keyutils on a headless box, a locked keychain) surfaces as an OS error — not
+/// `NoEntry` — which would otherwise fail `resolve` before `connect_named` even
+/// runs. For SQLite we resolve against an empty store, so a `VELLUM_DSN_<NAME>`
+/// override still applies but the keyring is never touched. Network backends do
+/// need a secret, so they consult the real `keyring`.
+pub fn resolve_credential(backend: Backend, name: &str, keyring: &dyn SecretStore) -> Result<Option<Credential>> {
+  match backend {
+    Backend::Sqlite => resolve(name, &MemoryStore::default()),
+    Backend::Postgres | Backend::MySql => resolve(name, keyring),
+  }
 }
 
 /// `vellum connect <name>`: read a password with no terminal echo and store it
