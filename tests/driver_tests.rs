@@ -602,12 +602,11 @@ mod postgres_it {
       "timestamptz → Timestamp, got {:?}",
       row[10]
     );
-    // int4[] is the conservative long tail (#76): an honest non-data marker,
-    // never a fake value.
-    assert!(
-      matches!(&row[11], Value::Text(s) if s.starts_with('<')),
-      "array → marker, got {:?}",
-      row[11]
+    // int4[] now decodes faithfully per element (#76), no longer a marker.
+    assert_eq!(
+      row[11],
+      Value::Array(vec![Value::Int(10), Value::Int(20), Value::Int(30)]),
+      "int4[] decodes to a real array"
     );
   }
 
