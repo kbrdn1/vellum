@@ -26,6 +26,7 @@ fn help_prints_subcommands() {
     .stdout(predicate::str::contains("SQL client"))
     .stdout(predicate::str::contains("--db"))
     .stdout(predicate::str::contains("--interactive"))
+    .stdout(predicate::str::contains("--conn"))
     .stdout(predicate::str::contains("connect"));
 }
 
@@ -94,6 +95,53 @@ fn db_without_query_launches_browse_which_needs_a_terminal() {
     .assert()
     .failure()
     .stderr(predicate::str::contains("needs an interactive terminal"));
+}
+
+#[test]
+fn db_and_conn_conflict() {
+  // `--db` opens a file directly, `--conn` a named `.vellum.toml` entry — asking
+  // for both is a usage error, rejected at the clap layer with a conflict
+  // message (not a silent precedence pick).
+  let mut cmd = Command::cargo_bin("vellum").unwrap();
+  cmd.arg("--db").arg("some.sqlite").arg("--conn").arg("prod");
+  cmd
+    .assert()
+    .failure()
+    .stderr(predicate::str::contains("cannot be used with"));
+}
+
+#[test]
+fn conn_unknown_name_errors() {
+  // With a `.vellum.toml` in the cwd (cwd wins over the global registry, so this
+  // is deterministic regardless of the runner's home), `--conn <name>` for a
+  // name that isn't declared reports it by name and points at `vellum connect` —
+  // it does not fall through to the terminal / a driver connect.
+  let dir = tempfile::tempdir().unwrap();
+  std::fs::write(
+    dir.path().join(".vellum.toml"),
+    "[connections.known]\nbackend = \"sqlite\"\npath = \"./known.db\"\n",
+  )
+  .unwrap();
+
+  let mut cmd = Command::cargo_bin("vellum").unwrap();
+  cmd.current_dir(dir.path()).arg("--conn").arg("unknown");
+  cmd
+    .assert()
+    .failure()
+    .stderr(predicate::str::contains("no connection `unknown`"));
+}
+
+#[test]
+fn conn_with_a_query_is_refused_for_now() {
+  // A one-shot query against a named connection is a later phase. `--conn x
+  // "SELECT …"` must fail loudly rather than silently ignore the query and open
+  // the browse UI. Checked before any config load, so no `.vellum.toml` needed.
+  let mut cmd = Command::cargo_bin("vellum").unwrap();
+  cmd.arg("--conn").arg("prod").arg("select 1");
+  cmd
+    .assert()
+    .failure()
+    .stderr(predicate::str::contains("isn't supported yet"));
 }
 
 #[test]
