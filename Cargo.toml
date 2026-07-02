@@ -54,8 +54,12 @@ serde = { version = "1", features = ["derive"] }
 toml = "0.8"
 # Connection secrets: never in the TOML. `secrecy` wraps in-memory passwords so
 # they zeroize on drop and never land in a `Debug` log. The `keyring` backend
-# (OS keychain) lands behind the `SecretStore` port alongside it.
+# (OS keychain) lands behind the `SecretStore` port alongside it (per-OS deps
+# below). `rpassword` reads the password with no terminal echo for `vellum
+# connect` — the interactive path is not e2e-tested (it needs a tty + a real
+# keychain); the storing seam is covered through the port with `MemoryStore`.
 secrecy = "0.10"
+rpassword = "7"
 # Async runtime. Only `rt-multi-thread` + `macros` (for `#[tokio::main]`) now;
 # `sync` (channels for the Effect loop) lands with the runtime phase.
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
@@ -99,6 +103,22 @@ ratatui = "0.30"
 # name (2 cells per char) can't overflow the line and shove the version chip
 # off-screen (#88). Already in the tree via ratatui — pinned as a direct dep.
 unicode-width = "0.2"
+
+# OS keyring backend for the `SecretStore` port (#72). keyring 3.x makes the
+# platform backend non-default, so it is selected per-OS: macOS Keychain,
+# Windows Credential Manager, and Linux `keyutils` (`linux-native` — a kernel
+# keyring with no D-Bus/secret-service dependency, so it builds headless on the
+# CI runners). CI never touches a real keychain (the storing seam is tested
+# through the port); these just have to compile on the macOS/Ubuntu/Windows
+# matrix.
+[target.'cfg(target_os = "macos")'.dependencies]
+keyring = { version = "3", features = ["apple-native"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+keyring = { version = "3", features = ["windows-native"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+keyring = { version = "3", features = ["linux-native"] }
 
 [features]
 # Opt-in gate for integration tests that need a real database *server*
