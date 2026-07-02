@@ -87,6 +87,10 @@ sqlx = { version = "0.9", default-features = false, features = [
   "uuid",
   "json",
   "time",
+  # Arbitrary-precision decode for PG `numeric`/`decimal` → `Value::Decimal`
+  # (#76). `bigdecimal` (not `rust_decimal`) so the full PG numeric range fits
+  # without silent truncation; rendered back as its exact text.
+  "bigdecimal",
 ] }
 # The single SQL-understanding layer (ARCHITECTURE §stack). Used here to keep
 # the read path read-only: parse the input and require exactly one

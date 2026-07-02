@@ -11,6 +11,7 @@ use std::str::FromStr;
 
 use async_trait::async_trait;
 use sqlx::postgres::{PgColumn, PgConnectOptions, PgPool, PgPoolOptions, PgRow};
+use sqlx::types::BigDecimal;
 // Trait methods imported anonymously to avoid colliding with the domain
 // `Column` / `Row` types.
 use sqlx::{
@@ -362,12 +363,37 @@ fn pg_value_at(row: &PgRow, i: usize) -> Result<Value> {
       let t: sqlx::types::time::Time = row.try_get(i).map_err(driver_err)?;
       Value::Timestamp(t.to_string())
     }
+    "NUMERIC" => match row.try_get::<BigDecimal, _>(i) {
+      Ok(d) => Value::Decimal(format_pg_numeric(&d)),
+      // `numeric` admits `NaN` / `±Infinity`, which `BigDecimal` can't hold, so
+      // its decode errors. Keep the honest marker for those rather than kill the
+      // whole row over an unrepresentable-but-valid value.
+      Err(_) => Value::Text(format!("<{}>", type_name.to_lowercase())),
+    },
     // Conservative non-data marker — honest about not decoding this type yet
-    // (numeric, arrays, enums, ranges, network types, …). Faithful decode is
-    // tracked by #76. Never a faked value.
+    // (ranges, network types, …). Faithful decode of the common long tail
+    // (numeric, arrays, enums) is #76. Never a faked value.
     _ => Value::Text(format!("<{}>", type_name.to_lowercase())),
   };
   Ok(value)
+}
+
+/// Render a decoded PG `numeric` as its exact decimal text. sqlx's `BigDecimal`
+/// decode reconstructs the value from PG's base-10000 groups, so its scale is
+/// rounded **up to a multiple of 4** — `12.34` can come back `12.3400`. PG's
+/// real display scale (`dscale`) is not exposed, so trailing fractional zeros
+/// are trimmed: mathematically exact, no spurious padding, no scientific
+/// notation (`BigDecimal` never emits it). The one visible effect is that a
+/// declared trailing zero (`1.10`) reads `1.1` — unavoidable once `dscale` is
+/// gone, and harmless for a browse cell.
+fn format_pg_numeric(d: &BigDecimal) -> String {
+  let s = d.to_string();
+  if s.contains('.') {
+    let s = s.trim_end_matches('0');
+    s.strip_suffix('.').unwrap_or(s).to_string()
+  } else {
+    s
+  }
 }
 
 /// Build the domain column headers from a slice of PG columns — shared by the

@@ -638,6 +638,39 @@ mod postgres_it {
   }
 
   #[tokio::test]
+  async fn pg_decodes_numeric_faithfully() {
+    // #76: `numeric`/`decimal` used to hit the conservative `<numeric>` marker.
+    // Decode it faithfully as its exact decimal text (arbitrary precision, no
+    // lossy f64), and NaN — which `BigDecimal` can't hold — falls back to the
+    // honest marker rather than killing the row.
+    let pool = seed_pool().await;
+    pool.execute("drop table if exists it_numeric").await.expect("drop");
+    pool
+      .execute("create table it_numeric (n numeric, big numeric(40, 10), nan numeric)")
+      .await
+      .expect("create table");
+    pool
+      .execute("insert into it_numeric values (12345.6789, 1234567890123456789012345678.9012345678, 'NaN')")
+      .await
+      .expect("seed row");
+
+    let driver = PostgresDriver::connect(&dsn()).await.expect("connect read-only");
+    let result = driver.query("select n, big, nan from it_numeric").await.expect("query");
+    let row = &result.rows[0];
+    assert_eq!(row[0], Value::Decimal("12345.6789".into()), "plain numeric");
+    assert_eq!(
+      row[1],
+      Value::Decimal("1234567890123456789012345678.9012345678".into()),
+      "arbitrary precision must not be truncated"
+    );
+    assert_eq!(
+      row[2],
+      Value::Text("<numeric>".into()),
+      "NaN falls back to the marker, not a crash"
+    );
+  }
+
+  #[tokio::test]
   async fn pg_query_refuses_a_data_modifying_cte() {
     // THE write-path guard for PG: a data-modifying CTE parses as a single
     // top-level `SELECT` (the sqlparser guard waves it through) but it WRITES.
