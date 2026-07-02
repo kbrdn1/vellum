@@ -10,7 +10,8 @@
 use std::str::FromStr;
 
 use async_trait::async_trait;
-use sqlx::postgres::{PgColumn, PgConnectOptions, PgPool, PgPoolOptions, PgRow};
+use sqlx::postgres::{PgColumn, PgConnectOptions, PgPool, PgPoolOptions, PgRow, PgTypeKind, PgValueFormat, PgValueRef};
+use sqlx::types::BigDecimal;
 // Trait methods imported anonymously to avoid colliding with the domain
 // `Column` / `Row` types.
 use sqlx::{
@@ -329,6 +330,20 @@ fn pg_value_at(row: &PgRow, i: usize) -> Result<Value> {
     return Ok(Value::Null);
   }
   let type_name = raw.type_info().name().to_string();
+  // Arrays dispatch on the structural kind (robust vs. matching `"INT4[]"`
+  // strings); the element type name drives per-element decode.
+  if let PgTypeKind::Array(elem) = raw.type_info().kind() {
+    let elem_name = elem.name().to_string();
+    return decode_pg_array(row, i, &elem_name);
+  }
+  // Enums decode to their text label. `try_get::<String>` would fail the enum's
+  // own-OID type-compat check, so decode straight from the raw value (the wire
+  // form of an enum *is* its label).
+  if matches!(raw.type_info().kind(), PgTypeKind::Enum(_)) {
+    return <String as sqlx::Decode<sqlx::Postgres>>::decode(raw)
+      .map(Value::Text)
+      .map_err(|e| VellumError::Driver(e.to_string()));
+  }
   let value = match type_name.as_str() {
     "BOOL" => Value::Bool(row.try_get::<bool, _>(i).map_err(driver_err)?),
     "INT2" => Value::Int(i64::from(row.try_get::<i16, _>(i).map_err(driver_err)?)),
@@ -362,12 +377,100 @@ fn pg_value_at(row: &PgRow, i: usize) -> Result<Value> {
       let t: sqlx::types::time::Time = row.try_get(i).map_err(driver_err)?;
       Value::Timestamp(t.to_string())
     }
+    "NUMERIC" => decode_pg_numeric(&raw, row, i),
     // Conservative non-data marker — honest about not decoding this type yet
-    // (numeric, arrays, enums, ranges, network types, …). Faithful decode is
-    // tracked by #76. Never a faked value.
+    // (ranges, network types, …). Faithful decode of the common long tail
+    // (numeric, arrays, enums) is #76. Never a faked value.
     _ => Value::Text(format!("<{}>", type_name.to_lowercase())),
   };
   Ok(value)
+}
+
+/// Decode a PG array cell into `Value::Array`, one `Value` per element. Decodes
+/// `Vec<Option<T>>` (not `Vec<T>`) so a NULL element becomes `Value::Null`
+/// rather than erroring the whole row. Element types beyond the supported
+/// scalars keep the honest `<elem[]>` marker rather than a faked value (#76).
+fn decode_pg_array(row: &PgRow, i: usize, elem_name: &str) -> Result<Value> {
+  // Each arm decodes the typed `Vec<Option<T>>` and maps element → `Value`
+  // (a NULL element → `Value::Null`).
+  macro_rules! decode {
+    ($ty:ty, $map:expr) => {
+      match row.try_get::<Vec<Option<$ty>>, _>(i) {
+        Ok(v) => v
+          .into_iter()
+          .map(|cell| cell.map_or(Value::Null, $map))
+          .collect::<Vec<Value>>(),
+        // A valid-but-unsupported shape (multi-dimensional array, non-1 lower
+        // bound) — sqlx's `Vec<T>` decoder rejects it. Fall back to the marker
+        // rather than fail the whole query; the pre-#76 behaviour never errored.
+        Err(_) => return Ok(Value::Text(format!("<{}[]>", elem_name.to_lowercase()))),
+      }
+    };
+  }
+  let items = match elem_name {
+    "INT2" => decode!(i16, |v| Value::Int(i64::from(v))),
+    "INT4" => decode!(i32, |v| Value::Int(i64::from(v))),
+    "INT8" => decode!(i64, Value::Int),
+    "FLOAT4" => decode!(f32, |v| Value::Float(f64::from(v))),
+    "FLOAT8" => decode!(f64, Value::Float),
+    "BOOL" => decode!(bool, Value::Bool),
+    "TEXT" | "VARCHAR" | "BPCHAR" | "NAME" => decode!(String, Value::Text),
+    // Unsupported element type — an honest whole-array marker, not a fake value.
+    _ => return Ok(Value::Text(format!("<{}[]>", elem_name.to_lowercase()))),
+  };
+  Ok(Value::Array(items))
+}
+
+/// Decode a PG `numeric` cell as `Value::Decimal`, preserving PG's display
+/// scale (`dscale`) — so `numeric(10,2)` `1.20` reads `1.20`, not `1.2`. sqlx's
+/// `BigDecimal` decode rounds the scale up to a multiple of 4 and drops
+/// `dscale`, so recover `dscale` from the wire value and `with_scale` back to
+/// it. `NaN` / `±Infinity` (which `BigDecimal` can't hold) keep the honest
+/// marker instead of erroring the row.
+fn decode_pg_numeric(raw: &PgValueRef, row: &PgRow, i: usize) -> Value {
+  let Ok(d) = row.try_get::<BigDecimal, _>(i) else {
+    return Value::Text("<numeric>".to_string());
+  };
+  let text = if raw.format() == PgValueFormat::Text {
+    // Text protocol: the bytes are already PG's exact decimal text.
+    raw
+      .as_bytes()
+      .ok()
+      .and_then(|b| std::str::from_utf8(b).ok())
+      .map(str::to_string)
+  } else {
+    // Binary numeric header is four `i16`s (big-endian): ndigits, weight, sign,
+    // dscale — so `dscale` is bytes `[6..8]`. `with_scale` truncates the
+    // multiple-of-4 padding (always ≥ dscale) back to the declared scale.
+    raw
+      .as_bytes()
+      .ok()
+      .and_then(|b| b.get(6..8).map(|s| i16::from_be_bytes([s[0], s[1]])))
+      .filter(|&scale| scale >= 0)
+      // `to_plain_string` (not `to_string`): `BigDecimal` renders small/large
+      // values in scientific notation (`4.91326E-7`), which isn't PG's text.
+      .map(|scale| d.with_scale(i64::from(scale)).to_plain_string())
+  };
+  Value::Decimal(text.unwrap_or_else(|| format_pg_numeric(&d)))
+}
+
+/// Fallback numeric text when `dscale` can't be read (see [`decode_pg_numeric`]).
+/// sqlx's `BigDecimal` decode reconstructs the value from PG's base-10000
+/// groups, so its scale is rounded **up to a multiple of 4** — `12.34` can come
+/// back `12.3400`. Trim the trailing fractional zeros: mathematically exact, no
+/// spurious padding, no scientific notation (`BigDecimal` never emits it). The
+/// only effect is that a declared trailing zero (`1.10`) reads `1.1` — but this
+/// path is hit only when the primary `dscale`-preserving decode couldn't.
+fn format_pg_numeric(d: &BigDecimal) -> String {
+  // `to_plain_string` avoids `BigDecimal`'s scientific notation for small/large
+  // values, keeping a plain decimal to trim.
+  let s = d.to_plain_string();
+  if s.contains('.') {
+    let s = s.trim_end_matches('0');
+    s.strip_suffix('.').unwrap_or(s).to_string()
+  } else {
+    s
+  }
 }
 
 /// Build the domain column headers from a slice of PG columns — shared by the
@@ -386,10 +489,16 @@ fn columns_from(cols: &[PgColumn]) -> Vec<Column> {
 /// Map a PG type name to a column-header `TypeKind`. The conservative long tail
 /// (#76) reports `Text` — the marker's own kind.
 fn typekind_from_pg(name: &str) -> TypeKind {
+  // Array types report `INT4[]`, `TEXT[]`, … — one `Array` header regardless of
+  // element type (mirrors `Value::Array`, even when a cell fell back to a marker).
+  if name.ends_with("[]") {
+    return TypeKind::Array;
+  }
   match name {
     "BOOL" => TypeKind::Bool,
     "INT2" | "INT4" | "INT8" => TypeKind::Int,
     "FLOAT4" | "FLOAT8" => TypeKind::Float,
+    "NUMERIC" => TypeKind::Decimal,
     "TEXT" | "VARCHAR" | "BPCHAR" | "NAME" | "UUID" => TypeKind::Text,
     "BYTEA" => TypeKind::Bytes,
     "JSON" | "JSONB" => TypeKind::Json,

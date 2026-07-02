@@ -532,7 +532,7 @@ mod postgres_it {
   use sqlx::{Executor as _, PgPool};
   use vellum::driver::{Capabilities, Driver, PostgresDriver};
   use vellum::model::catalog::RelationKind;
-  use vellum::model::{Backend, Value};
+  use vellum::model::{Backend, TypeKind, Value};
 
   /// The PG DSN — from `VELLUM_IT_PG_DSN`, or a standard local default so the
   /// CI `it-db` job (service on `localhost:5432`) needs no extra env.
@@ -602,12 +602,11 @@ mod postgres_it {
       "timestamptz → Timestamp, got {:?}",
       row[10]
     );
-    // int4[] is the conservative long tail (#76): an honest non-data marker,
-    // never a fake value.
-    assert!(
-      matches!(&row[11], Value::Text(s) if s.starts_with('<')),
-      "array → marker, got {:?}",
-      row[11]
+    // int4[] now decodes faithfully per element (#76), no longer a marker.
+    assert_eq!(
+      row[11],
+      Value::Array(vec![Value::Int(10), Value::Int(20), Value::Int(30)]),
+      "int4[] decodes to a real array"
     );
   }
 
@@ -634,6 +633,147 @@ mod postgres_it {
       result.columns.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(),
       ["id", "label"],
       "an empty result must still carry its column headers"
+    );
+  }
+
+  #[tokio::test]
+  async fn pg_decodes_numeric_faithfully() {
+    // #76: `numeric`/`decimal` used to hit the conservative `<numeric>` marker.
+    // Decode it faithfully as its exact decimal text (arbitrary precision, no
+    // lossy f64), and NaN — which `BigDecimal` can't hold — falls back to the
+    // honest marker rather than killing the row.
+    let pool = seed_pool().await;
+    pool.execute("drop table if exists it_numeric").await.expect("drop");
+    pool
+      .execute(
+        "create table it_numeric (n numeric, big numeric(40, 10), nan numeric, money numeric(10, 2), tiny numeric)",
+      )
+      .await
+      .expect("create table");
+    pool
+      .execute("insert into it_numeric values (12345.6789, 1234567890123456789012345678.9012345678, 'NaN', 1.20, 0.000000491326)")
+      .await
+      .expect("seed row");
+
+    let driver = PostgresDriver::connect(&dsn()).await.expect("connect read-only");
+    let result = driver
+      .query("select n, big, nan, money, tiny from it_numeric")
+      .await
+      .expect("query");
+    let row = &result.rows[0];
+    assert_eq!(row[0], Value::Decimal("12345.6789".into()), "plain numeric");
+    assert_eq!(
+      row[1],
+      Value::Decimal("1234567890123456789012345678.9012345678".into()),
+      "arbitrary precision must not be truncated"
+    );
+    assert_eq!(
+      row[2],
+      Value::Text("<numeric>".into()),
+      "NaN falls back to the marker, not a crash"
+    );
+    assert_eq!(
+      row[3],
+      Value::Decimal("1.20".into()),
+      "a fixed-scale numeric(10,2) keeps its declared trailing zero (PG's dscale)"
+    );
+    assert_eq!(
+      row[4],
+      Value::Decimal("0.000000491326".into()),
+      "a small numeric stays plain decimal, never scientific notation"
+    );
+    assert_eq!(
+      result.columns[0].kind,
+      TypeKind::Decimal,
+      "the numeric column header kind must report Decimal, not Text"
+    );
+  }
+
+  #[tokio::test]
+  async fn pg_decodes_arrays_faithfully() {
+    // #76: arrays used to hit the `<int4[]>` marker. Decode per element for the
+    // supported scalars, with a NULL element preserved as `Value::Null` (the
+    // whole row must not die over one NULL). An unsupported element type keeps
+    // the honest array marker.
+    let pool = seed_pool().await;
+    pool.execute("drop table if exists it_arrays").await.expect("drop");
+    pool
+      .execute("create table it_arrays (ints int4[], tags text[], with_null int4[], ranges int4range[], grid int4[][])")
+      .await
+      .expect("create table");
+    pool
+      .execute(
+        "insert into it_arrays values ('{1,2,3}', '{a,b}', '{1,NULL,3}', array['[1,2)'::int4range], '{{1,2},{3,4}}')",
+      )
+      .await
+      .expect("seed row");
+
+    let driver = PostgresDriver::connect(&dsn()).await.expect("connect read-only");
+    let result = driver
+      .query("select ints, tags, with_null, ranges, grid from it_arrays")
+      .await
+      .expect("query");
+    let row = &result.rows[0];
+    assert_eq!(
+      row[0],
+      Value::Array(vec![Value::Int(1), Value::Int(2), Value::Int(3)]),
+      "int4[]"
+    );
+    assert_eq!(
+      row[1],
+      Value::Array(vec![Value::Text("a".into()), Value::Text("b".into())]),
+      "text[]"
+    );
+    assert_eq!(
+      row[2],
+      Value::Array(vec![Value::Int(1), Value::Null, Value::Int(3)]),
+      "a NULL element stays Null, not a dead row"
+    );
+    assert_eq!(
+      row[3],
+      Value::Text("<int4range[]>".into()),
+      "an unsupported element type keeps the honest array marker"
+    );
+    // A multi-dimensional array — sqlx's `Vec<T>` decoder rejects it. It must
+    // fall back to the marker, never fail the whole query.
+    assert_eq!(
+      row[4],
+      Value::Text("<int4[]>".into()),
+      "a 2-D array falls back to the marker instead of erroring the query"
+    );
+    assert_eq!(
+      result.columns[0].kind,
+      TypeKind::Array,
+      "the array column header kind must report Array, not Text"
+    );
+  }
+
+  #[tokio::test]
+  async fn pg_decodes_enum_as_its_label() {
+    // #76: an enum used to hit the `<it_mood>` marker. Decode it faithfully as
+    // its text label.
+    let pool = seed_pool().await;
+    pool.execute("drop table if exists it_enum").await.expect("drop table");
+    pool.execute("drop type if exists it_mood").await.expect("drop type");
+    pool
+      .execute("create type it_mood as enum ('sad', 'ok', 'happy')")
+      .await
+      .expect("create type");
+    pool
+      .execute("create table it_enum (m it_mood)")
+      .await
+      .expect("create table");
+    pool
+      .execute("insert into it_enum values ('happy')")
+      .await
+      .expect("seed row");
+
+    let driver = PostgresDriver::connect(&dsn()).await.expect("connect read-only");
+    let result = driver.query("select m from it_enum").await.expect("query");
+    assert_eq!(
+      result.rows[0][0],
+      Value::Text("happy".into()),
+      "enum decodes to its label"
     );
   }
 
