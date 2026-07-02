@@ -13,7 +13,7 @@ use crate::driver::{Driver, SqliteDriver};
 use crate::error::{Result, VellumError};
 use crate::keyring_store::{store_secret, KeyringStore};
 use crate::model::QueryResult;
-use crate::secrets::SecretString;
+use crate::secrets::{SecretStore, SecretString};
 use crate::tui;
 use crate::tui::app::App;
 
@@ -127,15 +127,27 @@ fn run_command(command: Command) -> Result<()> {
 }
 
 /// `vellum connect <name>`: read a password with no terminal echo and store it
-/// in the OS keyring under the connection name. The prompt + keychain access
-/// are the untestable interactive edge (a tty + a real keychain); the storing
-/// itself goes through the tested [`store_secret`] seam.
+/// in the OS keyring under the connection name. Thin wrapper — it injects the
+/// two untestable edges (the `rpassword` prompt and the real [`KeyringStore`])
+/// into [`connect_with`], then prints the confirmation.
 fn connect(name: &str) -> Result<()> {
-  let password = rpassword::prompt_password(format!("Password for `{name}`: "))
-    .map_err(|e| VellumError::Secret(format!("could not read the password: {e}")))?;
-  store_secret(&KeyringStore::new(), name, &SecretString::from(password))?;
+  connect_with(&KeyringStore::new(), name, || {
+    rpassword::prompt_password(format!("Password for `{name}`: "))
+      .map_err(|e| VellumError::Secret(format!("could not read the password: {e}")))
+  })?;
   println!("stored the password for `{name}` in the system keyring");
   Ok(())
+}
+
+/// The core of `vellum connect`, with the password source and the secret store
+/// injected so the whole path — read the password, wrap it in a
+/// [`SecretString`], store it under `name` — is exercisable without a tty or a
+/// real keychain. `read_password` yields the plaintext (an aborted / failed
+/// prompt is an `Err`, and nothing is stored); the real command passes
+/// `rpassword` + a [`KeyringStore`], tests pass a fake reader + `MemoryStore`.
+pub fn connect_with(store: &dyn SecretStore, name: &str, read_password: impl FnOnce() -> Result<String>) -> Result<()> {
+  let password = read_password()?;
+  store_secret(store, name, &SecretString::from(password))
 }
 
 /// Refuse to launch a full-screen TUI when stdout is not a terminal (piped,

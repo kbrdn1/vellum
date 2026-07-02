@@ -6,7 +6,7 @@
 
 use vellum::cli::connect_with;
 use vellum::error::VellumError;
-use vellum::secrets::{ExposeSecret, MemoryStore, SecretStore, SecretString};
+use vellum::secrets::{ExposeSecret, MemoryStore, SecretStore};
 
 #[test]
 fn connect_with_stores_the_prompted_password_under_the_name() {
