@@ -2971,6 +2971,7 @@ dependencies = [
  "async-trait",
  "clap",
  "keyring",
+ "percent-encoding",
  "predicates",
  "ratatui",
  "rpassword",
